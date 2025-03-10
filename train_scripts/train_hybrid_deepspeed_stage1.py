@@ -251,6 +251,7 @@ def create_arg_parser():
     parser.add_argument('--max_trained_tokens', type=int, default=100_000_000, help='max trained tokens')
     parser.add_argument('--terminate_at_loss', type=float, default=0, help='terminate the training at loss')
     parser.add_argument('--lisa', type=int, default=1, help='lisa')
+    parser.add_argument('--quant', type=int, default=1, help='lisa')
     return parser
 
 def lr_schedule(args, step):
@@ -675,10 +676,10 @@ if __name__ == '__main__':
     model = HybridModel(transformer_model, args, tokenizer)
     model = model.to(dtype=torch.bfloat16)
 
-    model = replace_with_bnb_linear(model, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
-
-    teacher_attn_module_list = replace_with_bnb_linear(teacher_attn_module_list, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
-    
+    if args.quant:
+        model = replace_with_bnb_linear(model, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
+        teacher_attn_module_list = replace_with_bnb_linear(teacher_attn_module_list, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
+        
 
     #pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
     if args.ckpt_file is not None:
