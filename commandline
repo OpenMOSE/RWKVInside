@@ -65,3 +65,8 @@ python train_scripts/save_checkpoint.py myfolder/phi4-stage2/epoch_0_step_2200 m
 phi-4 instruct new approch(Attn loss stage1)
 stage 1(0->L20)
 sh train_stage1.sh -c configs/phi4.yaml -l 0.0002 -f 0.00001 -m 2048 -b 1 -a 4 -r "/home/client/Projects/RWKVInside/myfolder/new_dataset_format" -o "/home/client/Projects/RWKVInside/myfolder/phi-4/stage1-L0toL20"  -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'output-phi4-stage1-rwkv7-L0toL20'
+
+
+runpod setting
+sh train_stage1.sh -c configs/phi4.yaml -l 0.0001 -f 0.00001 -m 2048 -b 2 -a 4 -r "/workspace/r2" -o "/workspace/output/phi-4/stage1"  -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 1 -z 1 -P 'phi-4-stage1-rwkv7'
+

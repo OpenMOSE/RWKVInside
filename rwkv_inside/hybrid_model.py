@@ -266,7 +266,9 @@ class AttentionWrapper(nn.Module):
         if self.student_attn is None:
             special_attn_loss = 0.0
         else:
-            special_attn_loss = torch.linalg.vector_norm(teacher_hidden_states - student_hidden_states, dim=-1).mean() * (teacher_hidden_states[0].size(-1) ** -0.5)
+            special_attn_loss = self.comprehensive_attention_mimicking_loss(teacher_hidden_states,student_hidden_states,self.layer_idx,self.args.n_layer,self.args)
+
+            #special_attn_loss = torch.linalg.vector_norm(teacher_hidden_states - student_hidden_states, dim=-1).mean() * (teacher_hidden_states[0].size(-1) ** -0.5)
         
         #print(f'layer:{self.layer_idx} teacher_hidden_states = {teacher_hidden_states}')
         #print(f'layer:{self.layer_idx} student_hidden_states = {student_hidden_states}')

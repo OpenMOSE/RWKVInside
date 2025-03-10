@@ -3,7 +3,7 @@ RWKV:
   grad_cp: 1
 
 Llama:
-  model_id: /home/client/Projects/phi-4/
+  model_id: /workspace/llm/phi-4/
 is_llama_ffn: True
 kl_weight: 1.0
 ce_weight: 0.0

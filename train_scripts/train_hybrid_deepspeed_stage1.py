@@ -809,13 +809,13 @@ if __name__ == '__main__':
                         "buffer_count": 4,
                         'ratio':0.5
                     },
-                    "offload_param": {
-                        "device": "cpu",
-                        "pin_memory": False,
-                        "buffer_count": 1,
-                        "buffer_size": 1e6,
-                        "max_in_cpu" : 1e5
-                    },
+                    # "offload_param": {
+                    #     "device": "cpu",
+                    #     "pin_memory": False,
+                    #     "buffer_count": 1,
+                    #     "buffer_size": 1e6,
+                    #     "max_in_cpu" : 1e5
+                    # },
                     
                     "allgather_partitions": True,
                     "sub_group_size": 1e7,
@@ -1055,17 +1055,17 @@ if __name__ == '__main__':
     terminate = False
     teacher_attn_manager = TeacherAttnManager(model_engine, args.layers)
 
-    lisa_freezer = RandomLayerFreezingLISA(
-        model_engine=model_engine,
-        num_hidden_layers=transformer_model.config.num_hidden_layers,
-        freeze_ratio=0.7,
-        target_pattern="self_attn.student_attn",
-        update_freq=4,
-    )
+    # lisa_freezer = RandomLayerFreezingLISA(
+    #     model_engine=model_engine,
+    #     num_hidden_layers=transformer_model.config.num_hidden_layers,
+    #     freeze_ratio=0.7,
+    #     target_pattern="self_attn.student_attn",
+    #     update_freq=4,
+    # )
 
     FirstTime = True
 
-    lisa_freezer.step()
+    #lisa_freezer.step()
 
     for epoch in range(args.max_epochs):
         model_engine.train()
@@ -1097,7 +1097,7 @@ if __name__ == '__main__':
 
             if is_accumulation_step:
                global_step += 1
-               lisa_freezer.step()
+               #lisa_freezer.step()
             print('model engine step')
             model_engine.step()
             
@@ -1129,21 +1129,3 @@ if __name__ == '__main__':
                         import traceback 
                         traceback.print_exc()
                 
-                # if args.local_rank == 0:
-                #     print(f'saving epoch checkpoint to {args.output_dir}')
-                # #temporarily set attention_wrapper's teacher_attn to None
-                # # 遍历所有层
-                # for layer_idx in args.layers:
-                #     # 获取当前层的 AttentionWrapper
-                #     if args.local_rank == 0:
-                #         print(f'set teacher attn to None {layer_idx}')
-                #     attention_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
-                #     # 设置 teacher_attn to None
-                #     attention_wrapper.teacher_attn = None
-                # model_engine.save_checkpoint(args.output_dir, f"checkpoint-epoch{epoch}")
-                # # 遍历所有层
-                # for layer_idx in args.layers:
-                #     # 获取当前层的 AttentionWrapper
-                #     if args.local_rank == 0:
-                #         print(f'set teacher attn for layer {layer_idx}')
-                #     attention_wrapper = model_engine.m

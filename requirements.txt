@@ -1,0 +1,10 @@
+deepspeed
+bitsandbytes
+wandb
+prompt_toolkit
+pandas
+triton==3.0.0
+transformers
+einops
+h5py
+git+https://github.com/fla-org/flash-linear-attention
