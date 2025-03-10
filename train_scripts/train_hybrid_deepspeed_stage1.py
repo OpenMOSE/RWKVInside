@@ -251,7 +251,7 @@ def create_arg_parser():
     parser.add_argument('--max_trained_tokens', type=int, default=100_000_000, help='max trained tokens')
     parser.add_argument('--terminate_at_loss', type=float, default=0, help='terminate the training at loss')
     parser.add_argument('--lisa', type=int, default=1, help='lisa')
-    parser.add_argument('--quant', type=int, default=1, help='lisa')
+    parser.add_argument('--quant', type=int, default=0, help='lisa')
     return parser
 
 def lr_schedule(args, step):
