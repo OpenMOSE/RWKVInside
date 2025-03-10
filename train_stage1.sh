@@ -98,7 +98,7 @@ deepspeed \
     --warmup_steps $WARMUP_STEPS \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --world_size $WORLD_SIZE \
-    --save_per_batches 200 \
+    --save_per_batches 1000 \
     $CKPT_FILE \
     --stage $STAGE \
     --terminate_at_loss $TERMINATE_LOSS \
