@@ -489,7 +489,7 @@ class RWKV_Tmix_x070(torch.nn.Module):
             
 
     
-    
+    @torch.compile
     def forward(self, x, v_first,attention_mask):
         # print(f'pid is {os.getpid()} attention_mask: {attention_mask.dtype}')
         B, T, C = x.size()

@@ -37,10 +37,9 @@ import json
 import math
 import time
 import wandb
-import random
 from tqdm import tqdm
 from profiler import timer, time_function
-
+from transformers import BitsAndBytesConfig
 
 def create_arg_parser():
     node_rank = int(os.environ.get('NODE_RANK', 0))
@@ -117,7 +116,6 @@ def create_arg_parser():
     parser.add_argument('--stage', type=int, default=1,choices=[1,2,3], help='stage 1 only align attn output and stage 2 do kl-divergence,and stage 3 do SFT')
     parser.add_argument('--max_trained_tokens', type=int, default=100_000_000, help='max trained tokens')
     parser.add_argument('--terminate_at_loss', type=float, default=0, help='terminate the training at loss')
-    parser.add_argument('--lisa', type=int, default=1, help='lisa')
     return parser
 
 def lr_schedule(args, step):
@@ -297,56 +295,6 @@ class TeacherAttnManager:
                     attention_wrapper.v_first_state = v_first_state
             # 清空存储的引用
             self.stored_teacher_attns.clear()
-
-class LISAManager:
-    def __init__(self, model, total_layers, train_ratio=0.5, update_freq=100):
-        self.model = model
-        self.total_layers = total_layers
-        self.train_ratio = train_ratio  # 訓練する層の割合
-        self.update_freq = update_freq
-        self.step_counter = 0
-        self.layer_modules = self._get_layer_modules()
-        
-    def _get_layer_modules(self):
-        # モデル固有の層アクセスを実装
-        layers = []
-        for i in range(self.total_layers):
-            # モデル構造に応じて変更が必要
-            layers.append(getattr(self.model.model, "layers")[i])
-        return layers
-    
-    def _freeze_all_parameters(self):
-        """すべてのパラメータを凍結"""
-        for layer in self.layer_modules:
-            for param in layer.parameters():
-                param.requires_grad = False
-    
-    def _enable_attention_only(self, layer_idx):
-        """指定された層のAttention部分のみを訓練可能にする"""
-        layer = self.layer_modules[layer_idx]
-        
-        # モデルアーキテクチャに応じて調整が必要
-        # LLaMAなどのモデルでのAttentionモジュールへのアクセス例
-        attn_module = layer.self_attn  # または layer.attention など
-        
-        # Attention部分のみ訓練可能に設定
-        for name, param in attn_module.named_parameters():
-            param.requires_grad = True
-    
-    def update_trainable_layers(self):
-        self.step_counter += 1
-        if self.step_counter % self.update_freq != 0:
-            return
-        
-        # まずすべてのパラメータを凍結
-        self._freeze_all_parameters()
-        
-        # ランダムに選択した層のAttentionのみを訓練可能に
-        num_to_train = int(self.total_layers * self.train_ratio)
-        layers_to_train = random.sample(range(self.total_layers), num_to_train)
-        
-        for idx in layers_to_train:
-            self._enable_attention_only(idx)
 if __name__ == '__main__':
     parser = create_arg_parser()
     args = parser.parse_args()
@@ -517,19 +465,10 @@ if __name__ == '__main__':
         else:
             # 否则，根据命令行参数创建配置
             ds_config = {
-                "zero_force_ds_cpu_optimizer": False,
                 "distributed_backend": "nccl",
                 "train_batch_size": args.train_batch_size,
                 "bf16": {
                     "enabled": True
-                },
-                'weight_quantization': {
-                    'quantized_initialization': {
-                        'num_bits': 8,
-                        'group_size': 256,
-                        'group_dim': 1,
-                        'symmetric': False
-                    },
                 },
                 "fp32_reduce_scatter": True,
                 "zero_optimization": {
@@ -546,20 +485,17 @@ if __name__ == '__main__':
                     "offload_optimizer": {
                         "device": "cpu",
                         "pin_memory": True,
-                        "buffer_count": 4,
-                        'ratio':0.1
+                        "buffer_count": 4
                     },
-                    "offload_param": {
-                        "device": "cpu",
-                        "pin_memory": False,
-                        "buffer_count": 1,
-                        "buffer_size": 1e6,
-                        "max_in_cpu" : 1e5
-                    },
-                    
+                    # "offload_param": {
+                    #     "device": "cpu",
+                    #     "pin_memory": True,
+                    #     "buffer_count": 5,
+                    #     "buffer_size": 1e9,
+                    # },
                     "allgather_partitions": True,
-                    "sub_group_size": 1e7,
-                    "overlap_comm": False,
+                    "sub_group_size": 1e8,
+                    "overlap_comm": True,
                     "reduce_scatter": True,
                     "reduce_bucket_size": 5e6,
                     "contiguous_gradients": True
@@ -613,7 +549,6 @@ if __name__ == '__main__':
         vfirst_holder.requires_grad_(False)
         if args.deepspeed_stage == 3:
             ds_config_state = {
-                "zero_force_ds_cpu_optimizer": False,
                 "train_batch_size": args.train_batch_size,
                 "bf16": {"enabled": True},
                 "zero_optimization": {
@@ -625,26 +560,20 @@ if __name__ == '__main__':
                     
                     # 最小化内存使用
                     "memory_efficient_linear": True,
-                    "contiguous_gradients": False,
+                    "contiguous_gradients": True,
                     
                     # # 如果需要 CPU offload，使用最小配置
                     # "offload_param": {
                     #     "device": "cpu",
-                    #     "pin_memory": False,
-                    #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     "max_in_cpu" : 1e7
+                    #     "pin_memory": True,
+                    #     "buffer_count": 2,  # 减少缓冲区数量
+                    #     "buffer_size": 1e6,  # 更小的缓冲区大小
                     # },
-                    "offload_optimizer": {
-                        "device": "cpu",
-                        "pin_memory": True,
-                        "buffer_count": 4
-                    },
                     
                     # 简化通信设置
                     "allgather_partitions": True,
                     "reduce_scatter": True,
-                    "overlap_comm": False,
+                    "overlap_comm": True,
                 },
                 # 禁用不必要的功能
                 "wall_clock_breakdown": False,
@@ -687,48 +616,32 @@ if __name__ == '__main__':
                 print(f'initializing teacher model')
                 print(f'current gpu memory BEFORE initializing teacher model: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
             ds_config = {
-                "zero_force_ds_cpu_optimizer": False,
-                "distributed_backend": "nccl",
+                "distributed_backend": "rccl",
                 "train_batch_size": args.train_batch_size,
                 "bf16": {
                     "enabled": True
                 },
-                # 'weight_quantization': {
-                #     'quantized_initialization': {
-                #         'num_bits': 4,
-                #         'group_size': 64,
-                #         'group_dim': 1,
-                #         'symmetric': False
-                #     },
+                # "zero_optimization": {
+                #     "stage": args.deepspeed_stage,
+                #     "stage3_max_live_parameters": 1e9,
+                #     "stage3_max_reuse_distance": 1e9,
+                #     "stage3_prefetch_bucket_size": 5e6,
+                #     "memory_efficient_linear": True,
+                #     "stage3_param_persistence_threshold": 1e5,
+                #     # "offload_param": {
+                #     #     "device": "cpu",
+                #     #     "pin_memory": True,
+                #     #     "buffer_count": 4,
+                #     #     "buffer_size": 1e8
+                #     # },
+                #     "allgather_partitions": True,
+                #     "reduce_scatter": True,
+                #     "reduce_bucket_size": 5e6,
+                #     "overlap_comm": True,
+                #     "contiguous_gradients": True
                 # },
-                "zero_optimization": {
-                    "stage": args.deepspeed_stage,
-                    "stage3_max_live_parameters": 1e9,
-                    "stage3_max_reuse_distance": 1e9,
-                    "stage3_prefetch_bucket_size": 5e6,
-                    "memory_efficient_linear": True,
-                    "stage3_param_persistence_threshold": 1e5,
-                    # "offload_param": {
-                    #     "device": "cpu",
-                    #     "pin_memory": False,
-                    #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     "max_in_cpu" : 1e7
-                    # },
-                    "offload_optimizer": {
-                        "device": "cpu",
-                        "pin_memory": True,
-                        "buffer_count": 4,
-                        'ratio':0.3
-                    },
-                    "allgather_partitions": True,
-                    "reduce_scatter": True,
-                    "reduce_bucket_size": 5e6,
-                    "overlap_comm": False,
-                    "contiguous_gradients": False
-                },
-                "zero_force_ds_cpu_initialization": True,
-                "dump_state": True
+                # "zero_force_ds_cpu_initialization": True,
+                # "dump_state": True
             }
             if not args.deepspeed_offload:
                 ds_config['zero_optimization']['offload_param'] = None
@@ -736,9 +649,17 @@ if __name__ == '__main__':
             if teacher_model_id is None:
                 teacher_model_id = config['Llama']['model_id']
             print(f'initializing teacher model with id {teacher_model_id}')
+
+            # quantization_config = BitsAndBytesConfig(
+            #     load_in_4bit=True,
+            #     bnb_4bit_compute_dtype=torch.float16,
+            #     bnb_4bit_quant_type="nf4",
+            #     bnb_4bit_use_double_quant=True
+            # )
             teacher_model = AutoModelForCausalLM.from_pretrained(
                 teacher_model_id,
-                torch_dtype=dtype,
+                #quantization_config=quantization_config,
+                #torch_dtype=dtype,
                 device_map='cpu',
                 low_cpu_mem_usage=True
             )
@@ -749,7 +670,7 @@ if __name__ == '__main__':
                 print(f'teacher_model is {teacher_model}')
             for name, param in teacher_model.named_parameters():
                 param.requires_grad = False
-            # 使用DeepSpeed包装teacher model
+            #使用DeepSpeed包装teacher model
             teacher_engine, _, _, _ = deepspeed.initialize(
                 model=teacher_model,
                 config=ds_config
@@ -761,17 +682,17 @@ if __name__ == '__main__':
                 print(f'current gpu memory AFTER setting teacher model: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
             # 清理不需要的引用
             del teacher_model
+            #teacher_engine=teacher_model
             torch.cuda.empty_cache()
         elif args.stage == 1:
             #in stage 1, we don't need teacher model and 
             #we only align the original self attn output with TimeMixer output
             #Init the teacher module list engine with deepspeed
-            teacher_engine = None
+            teacher_engine = teacher_model
             if args.local_rank == 0:
                 print(f'initializing teacher model')
                 print(f'current gpu memory BEFORE initializing teacher attn list: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
             ds_config = {
-                "zero_force_ds_cpu_optimizer": False,
                 "distributed_backend": "nccl",
                 "train_batch_size": args.train_batch_size,
                 "bf16": {
@@ -786,21 +707,15 @@ if __name__ == '__main__':
                     "stage3_param_persistence_threshold": 1e4,
                     # "offload_param": {
                     #     "device": "cpu",
-                    #     "pin_memory": False,
-                    #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     #"max_in_cpu" : 1e8
+                    #     "pin_memory": True,
+                    #     "buffer_count": 4,
+                    #     "buffer_size": 1e8
                     # },
-                    "offload_optimizer": {
-                        "device": "cpu",
-                        "pin_memory": True,
-                        "buffer_count": 4
-                    },
                     "allgather_partitions": True,
                     "reduce_scatter": True,
                     "reduce_bucket_size": 5e6,
-                    "overlap_comm": False,
-                    "contiguous_gradients": False
+                    "overlap_comm": True,
+                    "contiguous_gradients": True
                 },
                 "zero_force_ds_cpu_initialization": True,
                 "dump_state": True
@@ -904,7 +819,7 @@ if __name__ == '__main__':
                         model_engine.save_checkpoint(args.output_dir, f"checkpoint-epoch{epoch}")
                     except Exception as e:
                         print(f"Error saving checkpoint: {e}")
-                        import traceback 
+                        import traceback
                         traceback.print_exc()
                 
                 # if args.local_rank == 0:

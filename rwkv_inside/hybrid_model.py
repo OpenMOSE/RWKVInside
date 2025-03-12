@@ -221,6 +221,7 @@ class AttentionWrapper(nn.Module):
                 else:
                     student_hidden_states = self.student_attn(hidden_states)
             self.v_first_state.shared_state.data[self.global_rank].copy_(v_first)
+            #print(student_hidden_states)
             if self.args.stage != 1:
                 return (student_hidden_states, None)
             # student_outputs = self.student_attn(hidden_states)

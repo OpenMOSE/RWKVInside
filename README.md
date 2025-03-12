@@ -1,5 +1,6 @@
 # RWKVInside
-
+## This repository is for my personal experimentation with linearizing Transformer models.
+## Discuss on Issues and Discord
 # HybridModel Overview
 
 ```mermaid

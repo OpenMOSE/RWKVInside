@@ -251,7 +251,6 @@ def create_arg_parser():
     parser.add_argument('--max_trained_tokens', type=int, default=100_000_000, help='max trained tokens')
     parser.add_argument('--terminate_at_loss', type=float, default=0, help='terminate the training at loss')
     parser.add_argument('--lisa', type=int, default=1, help='lisa')
-    parser.add_argument('--quant', type=int, default=0, help='lisa')
     return parser
 
 def lr_schedule(args, step):
@@ -676,10 +675,10 @@ if __name__ == '__main__':
     model = HybridModel(transformer_model, args, tokenizer)
     model = model.to(dtype=torch.bfloat16)
 
-    if args.quant:
-        model = replace_with_bnb_linear(model, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
-        teacher_attn_module_list = replace_with_bnb_linear(teacher_attn_module_list, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
-        
+    #model = replace_with_bnb_linear(model, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
+
+    #teacher_attn_module_list = replace_with_bnb_linear(teacher_attn_module_list, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
+    
 
     #pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
     if args.ckpt_file is not None:
@@ -803,12 +802,12 @@ if __name__ == '__main__':
                     "stage3_gather_16bit_weights_on_model_save": False,
                     "zero_quantized_weights": False,
                     "zero_hpz_partition_size": args.world_size,
-                    "zero_quantized_gradients": True,
+                    "zero_quantized_gradients": False,
                     "offload_optimizer": {
                         "device": "cpu",
                         "pin_memory": False,
                         "buffer_count": 4,
-                        'ratio':0.5
+                        'ratio':0.1
                     },
                     # "offload_param": {
                     #     "device": "cpu",
@@ -832,14 +831,14 @@ if __name__ == '__main__':
                 "gradient_accumulation_steps": args.accumulate_grad_batches if args.accumulate_grad_batches > 1 else None,
                 "wall_clock_breakdown": False,
                 "dump_state": True,
-                "activation_checkpointing": {
-                    "partition_activations": True,
-                    "cpu_checkpointing": True,
-                    "contiguous_memory_optimization": True,
-                    "number_checkpoints": 1,
-                    "synchronize_checkpoint_boundary": True,
-                    "profile": False
-                }
+                # "activation_checkpointing": {
+                #     "partition_activations": True,
+                #     "cpu_checkpointing": True,
+                #     "contiguous_memory_optimization": True,
+                #     "number_checkpoints": 1,
+                #     "synchronize_checkpoint_boundary": True,
+                #     "profile": False
+                # }
             }
         if not args.deepspeed_offload:
             ds_config['zero_optimization']['offload_optimizer'] = None
@@ -1078,19 +1077,19 @@ if __name__ == '__main__':
             # if FirstTime:
             #     FirstTime = False
                 
-            print('onbatch start')
+            ##print('onbatch start')
             lr, wd_now = on_train_batch_start(args, model_engine, global_step, epoch)
 
             batch = {k: v.to(model_engine.device) for k, v in batch.items()}
-            print('trainstep')
-            print(batch)
-            print(len(batch))
+            ##print('trainstep')
+            ##print(batch)
+            #print(len(batch))
             
             # 前向传播
             loss, teacher_loss, kl_loss, student_cross_entropy_loss = train_step(model_engine, batch, args, teacher_engine, tokenizer)
             
             #CAUTION: The v_first will NEVER be synchronized for first batch. Just treat it as an outlier.
-            print('backward')
+            #print('backward')
 
             model_engine.backward(loss)
 
@@ -1099,10 +1098,10 @@ if __name__ == '__main__':
             if is_accumulation_step:
                global_step += 1
                #lisa_freezer.step()
-            print('model engine step')
+            #print('model engine step')
             model_engine.step()
             
-            print('on train batch end')
+            #print('on train batch end')
             # 每一步都调用 on_train_batch_end，但只在累积步骤结束时更新进度条
             last_log_time, pbar = on_train_batch_end(
                 args, batch_idx, model_engine,teacher_engine, loss.item(), teacher_loss, kl_loss, student_cross_entropy_loss,

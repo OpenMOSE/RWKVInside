@@ -215,6 +215,22 @@ def dpo_train_step(model, ref_model, batch, args):
 
     return losses.mean(), metrics
 
+class L2Wrap(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, loss, y):
+            ctx.save_for_backward(y)
+            return loss
+
+        @staticmethod
+        def backward(ctx, grad_output):
+            y = ctx.saved_tensors[0]
+            # to encourage the logits to be close to 0
+            factor = 1e-4 / (y.shape[0] * y.shape[1])
+            maxx, ids = torch.max(y, -1, keepdim=True)
+            gy = torch.zeros_like(y)
+            gy.scatter_(-1, ids, maxx * factor)
+            return (grad_output, gy)
+
 @time_function
 def train_step(model, batch, args, teacher_engine=None, tokenizer=None):
     # print(batch)
@@ -252,11 +268,12 @@ def train_step(model, batch, args, teacher_engine=None, tokenizer=None):
             model, args, input_ids, labels, attention_mask)
         loss, kl_loss, student_ce_loss = compute_kl_loss(
             student_outputs, teacher_logits, labels, args,attention_mask=attention_mask)
+        loss = L2Wrap.apply(loss, student_outputs.logits)
     elif args.stage == 1:
-        print('get student outputs')
+        ##print('get student outputs')
         student_outputs = get_student_outputs(
             model, args, input_ids, labels, attention_mask)
-        print('get_attn_loss')
+        #print('get_attn_loss')
         loss, kl_loss, student_ce_loss = get_attn_loss(
             args, student_outputs)
         teacher_loss = None
@@ -290,7 +307,7 @@ def get_teacher_outputs(teacher_model, input_ids, attention_mask, labels, args):
     
     # # 将teacher模型移动到GPU
     # teacher_model.to(device)
-    #print('Getting Teacher Logits.')
+    # print('Getting Teacher Logits.')
     # print(f'input_ids = {input_ids}')
     # print(f'labels = {labels}')
     # print(f'attentionmask = {attention_mask}')
@@ -298,12 +315,16 @@ def get_teacher_outputs(teacher_model, input_ids, attention_mask, labels, args):
     # exit()
     with torch.no_grad():
         teacher_outputs = teacher_model(
-            input_ids=input_ids, attention_mask=attention_mask, labels=labels, use_cache=False, output_hidden_states=False)
+            input_ids=input_ids, attention_mask=attention_mask, labels=labels, output_hidden_states=False, use_cache=False) #, use_cache=False, output_hidden_states=False
     teacher_logits = teacher_outputs.logits
     teacher_loss = teacher_outputs.loss
+    # print(f'teacher logits = {teacher_logits}')
+    # print(f'teacher_loss = {teacher_loss}')
     # 将teacher模型移回CPU
     # teacher_model.to('cpu')
     return teacher_logits,  teacher_loss
+
+
 
 @time_function
 def compute_kl_loss_(student_outputs, teacher_logits, labels, args, attention_mask=None, chunk_size=4096):
@@ -363,7 +384,7 @@ def compute_kl_loss_(student_outputs, teacher_logits, labels, args, attention_ma
     return loss, kl_loss, student_cross_entropy_loss
 
 @time_function
-def compute_kl_loss(student_outputs, teacher_logits, labels, args, attention_mask=None, chunk_size=4096, topk=2000):
+def compute_kl_loss(student_outputs, teacher_logits, labels, args, attention_mask=None, chunk_size=4096, topk=5000):
     student_logits = student_outputs.logits  # shape: [batch_size, seq_len, vocab_size]
     vocab_student = student_logits.shape[-1]
     vocab_teacher = teacher_logits.shape[-1]
