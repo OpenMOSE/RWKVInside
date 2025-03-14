@@ -1,5 +1,8 @@
 # RWKVInside
 ## This repository is for my personal experimentation with linearizing Transformer models.
+```
+https://huggingface.co/OpenMOSE/PRWKV-7-Phi-4-Instruct-Preview-v0.1
+```
 ## Discuss on Issues and Discord
 # HybridModel Overview
 
