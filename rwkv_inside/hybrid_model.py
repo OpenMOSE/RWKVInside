@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 RWKV_VERSION=os.environ.get('RWKV_VERSION','v7')
 is_rwkv_7 = RWKV_VERSION == 'v7'
 if is_rwkv_7 :
-    from TimeMixer import RWKV_Tmix_x070 as TimeMixer
+    from TimeMixer import RWKV_Tmix_x070_Mose as TimeMixer
 else:
     from TimeMixer import RWKV_Tmix_x060 as TimeMixer
 import torch
@@ -119,41 +119,41 @@ class AttentionWrapper(nn.Module):
         t_flat = teacher_hidden_states.reshape(-1, hidden_dim)
         s_flat = student_hidden_states.reshape(-1, hidden_dim)
         
-        # バッチサイズが十分大きい場合のみSVD計算
-        if t_flat.size(0) >= hidden_dim // 4:
-            try:
-                # 上位kの特異値を比較
-                k = min(8, hidden_dim // 4)
-                _, t_s, _ = torch.svd(t_flat.t() @ t_flat, some=True)
-                _, s_s, _ = torch.svd(s_flat.t() @ s_flat, some=True)
+        # # バッチサイズが十分大きい場合のみSVD計算
+        # if t_flat.size(0) >= hidden_dim // 4:
+        #     try:
+        #         # 上位kの特異値を比較
+        #         k = min(8, hidden_dim // 4)
+        #         _, t_s, _ = torch.svd(t_flat.t() @ t_flat, some=True)
+        #         _, s_s, _ = torch.svd(s_flat.t() @ s_flat, some=True)
                 
-                # 正規化された特異値の分布一致
-                spectral_loss = F.mse_loss(t_s[:k]/t_s[0], s_s[:k]/s_s[0])
-                losses['spectral'] = spectral_loss
-            except:
-                # SVDが収束しない場合は代替手段
-                t_cov = (t_flat.t() @ t_flat) / t_flat.size(0)
-                s_cov = (s_flat.t() @ s_flat) / s_flat.size(0)
-                spectral_loss = torch.norm(t_cov - s_cov, p='fro') / hidden_dim
-                losses['spectral'] = spectral_loss
+        #         # 正規化された特異値の分布一致
+        #         spectral_loss = F.mse_loss(t_s[:k]/t_s[0], s_s[:k]/s_s[0])
+        #         losses['spectral'] = spectral_loss
+        #     except:
+        #         # SVDが収束しない場合は代替手段
+        #         t_cov = (t_flat.t() @ t_flat) / t_flat.size(0)
+        #         s_cov = (s_flat.t() @ s_flat) / s_flat.size(0)
+        #         spectral_loss = torch.norm(t_cov - s_cov, p='fro') / hidden_dim
+        #         losses['spectral'] = spectral_loss
         
-        # === 8. マルチスケール情報保存 ===
-        # 異なるウィンドウサイズでの情報集約と比較
-        for window in [2, 4]:
-            if seq_len >= window:
-                # 移動平均による滑らかな特徴
-                t_smooth = F.avg_pool1d(
-                    teacher_hidden_states.transpose(1, 2), 
-                    kernel_size=window, stride=1, padding=window//2
-                ).transpose(1, 2)[:, :seq_len]
+        # # === 8. マルチスケール情報保存 ===
+        # # 異なるウィンドウサイズでの情報集約と比較
+        # for window in [2, 4]:
+        #     if seq_len >= window:
+        #         # 移動平均による滑らかな特徴
+        #         t_smooth = F.avg_pool1d(
+        #             teacher_hidden_states.transpose(1, 2), 
+        #             kernel_size=window, stride=1, padding=window//2
+        #         ).transpose(1, 2)[:, :seq_len]
                 
-                s_smooth = F.avg_pool1d(
-                    student_hidden_states.transpose(1, 2),
-                    kernel_size=window, stride=1, padding=window//2
-                ).transpose(1, 2)[:, :seq_len]
+        #         s_smooth = F.avg_pool1d(
+        #             student_hidden_states.transpose(1, 2),
+        #             kernel_size=window, stride=1, padding=window//2
+        #         ).transpose(1, 2)[:, :seq_len]
                 
-                smooth_loss = F.mse_loss(t_smooth, s_smooth)
-                losses[f'smooth_{window}'] = smooth_loss
+        #         smooth_loss = F.mse_loss(t_smooth, s_smooth)
+        #         losses[f'smooth_{window}'] = smooth_loss
         
         # === 9. 層依存パラメータの設定 ===
         # 下位層は基本情報、上位層は高次特徴を重視
@@ -164,10 +164,10 @@ class AttentionWrapper(nn.Module):
         layer_weight = 1.0#args.base_weight * (args.layer_decay ** layer_idx)
         
         # 上部層はコンテキスト関係をより重視
-        context_importance = 1.0 * (1.0 + 0.5 * relative_depth)
+        context_importance = 1.0 #* (1.0 + 0.5 * relative_depth)
         
         # 下部層は基本情報をより重視
-        content_importance = 1.0 * (1.0 - 0.3 * relative_depth)
+        content_importance = 1.0 #* (1.0 - 0.3 * relative_depth)
         
         # === 10. 最終的な重み付けLoss ===
         # 基本Lossの組み合わせ
@@ -177,8 +177,7 @@ class AttentionWrapper(nn.Module):
             context_importance * losses['context'] +
             getattr(args, 'local_weight', 0.5) * losses.get('local', 0) +
             getattr(args, 'global_weight', 0.5) * losses.get('global', 0) +
-            getattr(args, 'temporal_weight', 1.0) * losses.get('temporal', 0) +
-            getattr(args, 'spectral_weight', 0.3) * losses.get('spectral', 0)
+            getattr(args, 'temporal_weight', 1.0) * losses.get('temporal', 0)
         )
         
         # オプション: 検証用にすべての損失コンポーネントを返す

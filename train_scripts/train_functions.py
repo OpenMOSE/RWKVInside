@@ -382,9 +382,67 @@ def compute_kl_loss_(student_outputs, teacher_logits, labels, args, attention_ma
     if attention_mask is not None:
         del attention_mask
     return loss, kl_loss, student_cross_entropy_loss
+    
+@time_function #Modified Temperature
+def compute_kl_loss(student_outputs, teacher_logits, labels, args, attention_mask=None, chunk_size=4096,temperature=3.0):
+    student_logits = student_outputs.logits  # shape: [batch_size, seq_len, vocab_size]
+    vocab_student = student_logits.shape[-1]
+    vocab_teacher = teacher_logits.shape[-1]
+
+    # Truncate teacher logits if necessary
+    if vocab_teacher > vocab_student:
+        teacher_logits = teacher_logits[:, :, :vocab_student]
+    
+    # 温度パラメータの取得（argsにtemperature属性があると仮定）
+    #temperature = getattr(args, "temperature", 2.0)
+
+     
+    # 温度スケーリングを適用したロジットの計算
+    student_logits_scaled = student_logits / temperature
+    
+    # Compute softmax for student and teacher with temperature scaling
+    log_probs_student = F.log_softmax(student_logits_scaled, dim=-1)  # [batch_size, seq_len, vocab_size]
+    with torch.no_grad():
+        teacher_logits_scaled = teacher_logits / temperature
+        targets = F.softmax(teacher_logits_scaled, dim=-1)    # [batch_size, seq_len, vocab_size]
+    
+    # Compute KL divergence without reduction
+    kl_div_all = F.kl_div(
+        log_probs_student,
+        targets,
+        reduction='none'  # Keep the full tensor to apply mask
+    )  # [batch_size, seq_len, vocab_size]
+    
+    # Sum across vocabulary dimension first
+    kl_div_per_token = kl_div_all.sum(dim=-1)  # [batch_size, seq_len]
+    
+    if attention_mask is not None:
+        # Apply attention mask and compute mean only over attended positions
+        masked_kl = kl_div_per_token * attention_mask
+        kl_loss = masked_kl.sum() / (attention_mask.sum() + 1e-6)  # Add small epsilon for numerical stability
+    else:
+        # If no mask provided, take mean over all tokens
+        kl_loss = kl_div_per_token.mean()
+    
+    # 温度スケーリングによる勾配補正
+    kl_loss = (temperature ** 2) * kl_loss
+
+    del log_probs_student, targets, kl_div_all, kl_div_per_token
+    
+    # Get cross entropy loss from student outputs
+    student_cross_entropy_loss = student_outputs.loss
+    
+    # Combine losses using weights from args
+    loss = args.kl_weight * kl_loss# + args.ce_weight * student_cross_entropy_loss
+    
+    del student_logits, teacher_logits, labels
+    if attention_mask is not None:
+        del attention_mask
+    return loss, kl_loss, student_cross_entropy_loss
+
 
 @time_function
-def compute_kl_loss(student_outputs, teacher_logits, labels, args, attention_mask=None, chunk_size=4096, topk=5000):
+def compute_kl_loss_(student_outputs, teacher_logits, labels, args, attention_mask=None, chunk_size=4096, topk=10000):
     student_logits = student_outputs.logits  # shape: [batch_size, seq_len, vocab_size]
     vocab_student = student_logits.shape[-1]
     vocab_teacher = teacher_logits.shape[-1]
@@ -680,10 +738,14 @@ def compute_adaptive_kl_loss(
 
 def configure_optimizer(model, args):
     lr_decay = set()
+    lr_0x = set()
     lr_1x = set()
     lr_2x = set()
     lr_3x = set()
+    #print(model.keys())
     for n, p in model.named_parameters():
+        if 'embed' in n or 'lm_head' in n or '.norm.' in n:
+            print(f'name={n} grad={p.requires_grad}')
         if not p.requires_grad:
             continue
         if (("_w1" in n) or ("_w2" in n)) and (args.layerwise_lr > 0):
@@ -697,11 +759,21 @@ def configure_optimizer(model, args):
         elif ("time_first" in n) and (args.layerwise_lr > 0):
             lr_3x.add(n)
         elif (len(p.squeeze().shape) >= 2) and (args.weight_decay > 0):
-            lr_decay.add(n)
+            if 'embed' in n or 'lm_head' in n or '.norm.' in n:
+                print(f'{n} zero lr')
+                lr_0x.add(n)
+            else:
+                lr_decay.add(n)
         else:
-            lr_1x.add(n)
+            #print(f'{n}')
+            if 'embed' in n or 'lm_head' in n or '.norm.' in n:
+                print(f'{n} zero lr')
+                lr_0x.add(n)
+            else:
+                lr_1x.add(n)
 
     lr_decay = sorted(list(lr_decay))
+    lr_0x = sorted(list(lr_0x))
     lr_1x = sorted(list(lr_1x))
     lr_2x = sorted(list(lr_2x))
     lr_3x = sorted(list(lr_3x))
@@ -709,6 +781,7 @@ def configure_optimizer(model, args):
     
     if args.layerwise_lr > 0:
         optim_groups = [
+                {"params": [param_dict[n] for n in lr_0x], "weight_decay": 0.0, "my_lr_scale": 0.0},
                 {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
                 {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0},
                 {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 3.0},
@@ -718,7 +791,7 @@ def configure_optimizer(model, args):
 
     if args.weight_decay > 0:
         optim_groups += [{"params": [param_dict[n] for n in lr_decay], "weight_decay": args.weight_decay, "my_lr_scale": 1.0}]
-
+    #print(optim_groups)
     if args.deepspeed:
         if args.deepspeed_offload:
             optimizer = DeepSpeedCPUAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adamw_mode=True, amsgrad=False)

@@ -221,6 +221,7 @@ class StreamingCLMDataCollator:
 
 import itertools
 import random
+import time
 from typing import Optional, Dict, List, Union, Tuple
 from torch.utils.data import Dataset
 class TypedDataset(Dataset):
@@ -245,6 +246,9 @@ class TypedDataset(Dataset):
         
         self.conversation_offsets = [0] + list(itertools.accumulate(self.conversation_lengths))
         self.text_offsets = [0] + list(itertools.accumulate(self.text_lengths))
+
+        # 現在時刻をシードとして使用
+        random.seed(int(time.time()))
     
     def __len__(self) -> int:
         return self.total_length
@@ -304,8 +308,8 @@ class TypedStreamingCLMDataCollator:
     min_length: int
     typed_dataset: TypedDataset
     pad_to_multiple_of: Optional[int] = None
-    need_to_pad: bool = False
-    padding_side :str = "left"
+    need_to_pad: bool = True
+    padding_side :str = "right"
     
     def concatenate_if_needed(self, text: str, is_conversation: bool) -> str:
         """Concatenate text with random samples of the same type if it's too short"""

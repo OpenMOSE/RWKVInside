@@ -75,7 +75,10 @@ def convert_adapter_weight_names(state_dict):
             for old_pattern, new_pattern in adapter_name_mapping.items():
                 new_key = new_key.replace(old_pattern, new_pattern)
             # テンソルをBF16に変換
-            new_state_dict[new_key] = tensor.detach().clone().to(torch.bfloat16)
+            if 'emb.' in new_key or 'head' in new_key or 'ln_out' in new_key:
+                print(f'skipped {new_key}')
+            else:
+                new_state_dict[new_key] = tensor.detach().clone().to(torch.bfloat16)
 
     #exit()
     
@@ -135,9 +138,9 @@ def merge_safetensors(input_dir):
     return merged_weights
 
 def main():
-    input_dir = "/home/client/Projects/Phi-4-mini-instruct"
-    adapter_file = "myfolder/phi4-stage2/pytorch_model.bin"  # Adapter の PyTorch モデルファイル
-    output_file = "rwkv-phi4-mini-instruct-stage2.pth"
+    input_dir = "/workspace/llm/Mistral-Small-24B-Instruct-2501"
+    adapter_file = "/workspace/output/mistral3small/stage2p2/pytorch_model.bin/pytorch_model.bin"  # Adapter の PyTorch モデルファイル
+    output_file = "/workspace/output/mistral3small/PRWKV-7-Mistral-Small-Instruct-Preview-v0.1.pth"
     
     try:
         print("safetensorファイルのマージを開始します...")
@@ -151,7 +154,7 @@ def main():
             # ---- ここで q_proj, k_proj, v_proj を含むキーを削除 ----
             print("\nq_proj, k_proj, v_proj を含むキーを削除します...")
             remove_keys = [k for k in merged_weights.keys() 
-                           if ("q_proj" in k or "k_proj" in k or "v_proj" in k  or "o_proj" in k)]
+                           if ("q_proj" in k or "k_proj" in k or "v_proj" in k  or "o_proj" in k   or "qkv_proj" in k)]
             
             for k in remove_keys:
                 del merged_weights[k]

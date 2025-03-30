@@ -200,7 +200,7 @@ def create_arg_parser():
     parser.add_argument('--grad_cp', type=int, default=0, help='gradient checkpoint in the model')
     parser.add_argument('--save_per_batches', type=int, default=10000, help='number of batches to save the model')
     parser.add_argument('--my_exit', type=int, default=300, help='exit condition in the model')
-    parser.add_argument('--weight_decay', type=float, default=0.1, help='weight decay in the model')
+    parser.add_argument('--weight_decay', type=float, default=0.05, help='weight decay in the model')
     parser.add_argument('--lr_init', type=float, default=6e-4, help='initial learning rate in the model')
     parser.add_argument('--lr_final', type=float, default=1e-5, help='final learning rate in the model')
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 parameter in the Adam optimizer')
@@ -675,9 +675,9 @@ if __name__ == '__main__':
     model = HybridModel(transformer_model, args, tokenizer)
     model = model.to(dtype=torch.bfloat16)
 
-    #model = replace_with_bnb_linear(model, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
+    # model = replace_with_bnb_linear(model, module_names=["mlp","head"], threshold=0)
 
-    #teacher_attn_module_list = replace_with_bnb_linear(teacher_attn_module_list, module_names=["mlp","head","self_attn.o_proj","self_attn.qkv_proj"], threshold=0)
+    # teacher_attn_module_list = replace_with_bnb_linear(teacher_attn_module_list, module_names=["mlp","head"], threshold=0)
     
 
     #pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
@@ -796,18 +796,18 @@ if __name__ == '__main__':
                     "stage": args.deepspeed_stage,
                     "stage3_max_live_parameters": 5e8,
                     "stage3_max_reuse_distance": 5e8,
-                    "stage3_prefetch_bucket_size": 5e6,
+                    #"stage3_prefetch_bucket_size": 5e6,
                     "stage3_param_persistence_threshold": 1e4,
                     "memory_efficient_linear": True,
                     "stage3_gather_16bit_weights_on_model_save": False,
                     "zero_quantized_weights": False,
                     "zero_hpz_partition_size": args.world_size,
-                    "zero_quantized_gradients": False,
+                    "zero_quantized_gradients": True,
                     "offload_optimizer": {
                         "device": "cpu",
                         "pin_memory": False,
                         "buffer_count": 4,
-                        'ratio':0.1
+                        #'ratio':0.2
                     },
                     # "offload_param": {
                     #     "device": "cpu",
@@ -819,9 +819,9 @@ if __name__ == '__main__':
                     
                     "allgather_partitions": True,
                     "sub_group_size": 1e7,
-                    "overlap_comm": False,
+                    "overlap_comm": True,
                     "reduce_scatter": True,
-                    "reduce_bucket_size": 5e6,
+                    #"reduce_bucket_size": 5e6,
                     "contiguous_gradients": True
                 },
                 "gradient_clipping": args.gradient_clip_val,

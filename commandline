@@ -85,3 +85,143 @@ python ./train_scripts/ConvertToRWKVInfer.py
 Stage2 on runpod mi300x
 sh train.sh -c configs/phi4.yaml -l 0.00001 -f 0.000001 -m 2048 -b 12 -a 1 -r "/workspace/r2" -o "/workspace/output/phi-4/stage2" -k "/workspace/output/phi-4/stage-1p/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'phi-4-stage2-rwkv7' -N 1
 
+
+
+
+sh train_stage1.sh -c configs/mistral3small.yaml -l 0.0001 -f 0.00001 -m 2048 -b 3 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage1p" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'mistral-small-stage1' -N 1
+
+Convert Stage1 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage1/epoch_0_step_9000 /workspace/output/mistral3small/stage1/pytorch_model.bin
+
+
+#Stage2 Mistral
+sh train.sh -c configs/mistral3small.yaml -l 0.000005 -f 0.000001 -m 6144 -b 4 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2' -N 1
+
+Convert Stage2 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2/epoch_0_step_400 /workspace/output/mistral3small/stage2/pytorch_model2.bin
+Convert Stage2 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2/epoch_0_step_1200 /workspace/output/mistral3small/stage2/pytorch_model2.bin
+
+#Stage2-1 Mistral HighLR
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.000001 -m 4096 -b 3 -a 6 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-1' -N 1
+
+
+Convert Stage1 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage1p/epoch_0_step_3000 /workspace/output/mistral3small/stage1p/pytorch_model.bin
+
+
+
+#Stage2-1p Mistral HighLR
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.000001 -m 4096 -b 3 -a 6 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-1' -N 1
+
+
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.000001 -m 4096 -b 3 -a 6 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-1' -N 1
+
+
+
+
+sh train_stage1.sh -c configs/mistral3small.yaml -l 0.000001 -f 0.00001 -m 2048 -b 3 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage1p" -k "/workspace/output/mistral3small/stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'mistral-small-stage1' -N 1
+
+
+#Stage2-1 Temp4
+sh train.sh -c configs/mistral3small.yaml -l 0.000005 -f 0.000001 -m 4096 -b 3 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-1' -N 1
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2/epoch_0_step_200 /workspace/output/mistral3small/stage2/pytorch_model.bin
+
+#Stage2-1 Temp3
+sh train.sh -c configs/mistral3small.yaml -l 0.000003 -f 0.000001 -m 4096 -b 3 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2p1" -k "/workspace/output/mistral3small/stage2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-1' -N 1
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2p1/epoch_0_step_1800 /workspace/output/mistral3small/stage2p1/pytorch_model.bin
+
+
+#Stage2-1 Temp2
+sh train.sh -c configs/mistral3small.yaml -l 0.000003 -f 0.000001 -m 4096 -b 3 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2p2" -k "/workspace/output/mistral3small/stage2p1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-1' -N 1
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2p2/epoch_0_step_2000 /workspace/output/mistral3small/stage2p2/pytorch_model.bin
+
+
+#Stage2-1 Temp1
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.000001 -m 4096 -b 3 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2p3" -k "/workspace/output/mistral3small/stage2p2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-1' -N 1
+
+
+
+
+python ./train_scripts/ConvertToRWKVInfer.py 
+
+##########################
+
+#Stage1 Comeback!
+sh train_stage1.sh -c configs/mistral3small.yaml -l 0.0001 -f 0.00001 -m 2048 -b 10 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage1" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'mistral-small-stage1' -N 1
+
+Convert Stage1 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage1/epoch_0_step_2000 /workspace/output/mistral3small/stage1/pytorch_model.bin
+
+#Stage2-0 Temp1.0
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.000001 -m 4096 -b 3 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-1' -N 1
+
+Convert Stage2p0 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2/epoch_0_step_600 /workspace/output/mistral3small/stage2/pytorch_model.bin
+
+#Stage2-1 Temp1.0
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.00001 -m 2048 -b 8 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2p1" -k "/workspace/output/mistral3small/stage2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-2' -N 1
+
+Convert Stage2p1 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2p1/epoch_0_step_1800 /workspace/output/mistral3small/stage2p1/pytorch_model.bin
+
+
+#Stage2-2 Temp2.0
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.00001 -m 2048 -b 8 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2p2" -k "/workspace/output/mistral3small/stage2p1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-3' -N 1
+
+
+#Stage1 Comeback!
+sh train_stage1.sh -c configs/mistral3small.yaml -l 0.0001 -f 0.00001 -m 512 -b 60 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage1" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'mistral-small-stage1' -N 1
+
+Convert Stage1 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage1/epoch_0_step_1000 /workspace/output/mistral3small/stage1/pytorch_model.bin
+
+#Stage2-1 Temp4.0
+sh train.sh -c configs/mistral3small.yaml -l 0.000005 -f 0.000001 -m 2048 -b 7 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-2-temp-4.0' -N 1
+
+
+Convert Stage2 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2/epoch_0_step_600 /workspace/output/mistral3small/stage2/pytorch_model.bin
+
+#Stage2-1 Temp3.0
+sh train.sh -c configs/mistral3small.yaml -l 0.000005 -f 0.000001 -m 2048 -b 7 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-2-temp-3.0' -N 1
+
+
+
+
+
+
+#Stage2-1 Temp2.0
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.00001 -m 2048 -b 8 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2p1" -k "/workspace/output/mistral3small/stage2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-2-tanomuyo' -N 1
+Convert Stage2 to bin
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2p1/epoch_0_step_400 /workspace/output/mistral3small/stage2p1/pytorch_model.bin
+
+sh train.sh -c configs/mistral3small.yaml -l 0.00001 -f 0.00001 -m 1024 -b 16 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2p1" -k "/workspace/output/mistral3small/stage2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-2-onegai' -N 1
+
+
+#Tryagain Stage1
+
+#Stage1 Comeback!
+sh train_stage1.sh -c configs/mistral3small.yaml -l 0.0001 -f 0.00001 -m 2048 -b 8 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage1" -k "/workspace/output/mistral3small/stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'mistral-small-stage1' -N 1
+
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage1p/epoch_0_step_2200 /workspace/output/mistral3small/stage1p/pytorch_model.bin
+
+
+#Stage1 Comeback!
+
+sh train_stage1.sh -c configs/mistral3small.yaml -l 0.00005 -f 0.00001 -m 2048 -b 7 -a 2 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage1p" -k "/workspace/output/mistral3small/stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'mistral-small-stage1' -N 1
+
+
+#Stage2-1 Temp3.0
+sh train.sh -c configs/mistral3small.yaml -l 0.000006 -f 0.00001 -m 2048 -b 8 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-2-phoenix' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /workspace/output/mistral3small/stage2/epoch_0_step_200 /workspace/output/mistral3small/stage2/pytorch_model.bin
+
+#Stage2-1 Temp3.0
+sh train.sh -c configs/mistral3small.yaml -l 0.00003 -f 0.00003 -m 2048 -b 8 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage2" -k "/workspace/output/mistral3small/stage2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'mistral-small-stage2-2-phoenix-2' -N 1
+
+
+#KIWO TORINAOSHITE JIBUNNWO SHINJIRU
+
+sh train_stage1.sh -c configs/mistral3small.yaml -l 0.0001 -f 0.00001 -m 1024 -b 16 -a 1 -r "/workspace/r2" -o "/workspace/output/mistral3small/stage1pmose" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'mistral-small-stage1' -N 1
