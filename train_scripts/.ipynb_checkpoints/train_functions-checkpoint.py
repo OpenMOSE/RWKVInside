@@ -288,21 +288,12 @@ def get_attn_loss(args, student_outputs):
     kl_loss = None
     student_cross_entropy_loss = None
     return loss,kl_loss,student_cross_entropy_loss
-firsttime_student = True
-firsttime_teacher = True
+
 @time_function
 def get_student_outputs(model, args, input_ids, labels, attention_mask):
     # print(f'student :attention_mask {attention_mask}')
     #print('getting Student Logits.')
-    global firsttime_student
-    if firsttime_student:
-        firsttime_student = False
-        with torch.no_grad():
-            student_outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask, 
-            labels=labels, use_cache=False, 
-            output_attentions=args.stage==1)
+    
     student_outputs = model(
             input_ids=input_ids,
             attention_mask=attention_mask, 
@@ -312,7 +303,6 @@ def get_student_outputs(model, args, input_ids, labels, attention_mask):
     return student_outputs
 @time_function
 def get_teacher_outputs(teacher_model, input_ids, attention_mask, labels, args):
-    global firsttime_teacher
     # device = input_ids.device
     
     # # 将teacher模型移动到GPU
@@ -321,14 +311,6 @@ def get_teacher_outputs(teacher_model, input_ids, attention_mask, labels, args):
     # print(f'input_ids = {input_ids}')
     # print(f'labels = {labels}')
     # print(f'attentionmask = {attention_mask}')
-
-    if firsttime_teacher:
-        firsttime_teacher = False
-        with torch.no_grad():
-            teacher_outputs = teacher_model(
-                input_ids=input_ids, attention_mask=attention_mask, labels=labels, output_hidden_states=False, use_cache=False) #, use_cache=False, output_hidden_states=False
-        teacher_logits = teacher_outputs.logits
-        teacher_loss = teacher_outputs.loss
 
     # exit()
     with torch.no_grad():
@@ -414,7 +396,7 @@ def compute_kl_loss(student_outputs, teacher_logits, labels, args, attention_mas
     # 温度パラメータの取得（argsにtemperature属性があると仮定）
     #temperature = getattr(args, "temperature", 2.0)
 
-      
+     
     # 温度スケーリングを適用したロジットの計算
     student_logits_scaled = student_logits / temperature
     

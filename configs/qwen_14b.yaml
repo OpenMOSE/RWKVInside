@@ -3,12 +3,14 @@ RWKV:
   grad_cp: 1
 
 Llama:
-  model_id: /home/client/Projects/Qwen2.5-14B-Instruct/
+  model_id: /workspace/llm/Qwen2.5-14B-Instruct/
 is_llama_ffn: True
 kl_weight: 1
 ce_weight: 0
-model_file: QWen2.5-7B
+model_file: Qwen2.5-14B-Instruct
+init_with_llama: False
 is_rwkv_att_only: True
 teach_mode:
   is_client: False
+  is_hidden_align: False
 is_all_labels_kl: True

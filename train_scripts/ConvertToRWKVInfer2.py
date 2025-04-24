@@ -138,15 +138,14 @@ def merge_safetensors(input_dir):
     return merged_weights
 
 def main():
-    input_dir = "/workspace/llm/Qwen2.5-14B-Instruct"
-    adapter_file = "/workspace/output/Qwen2.5-14B-Instruct/stage2_cxa075_final_2048/pytorch_model.bin/pytorch_model.bin"  # Adapter の PyTorch モデルファイル
-    output_file = "/workspace/output/Qwen2.5-14B-Instruct/PRWKV7-cxa075-qwen14b-stage2-final.pth"
+    input_dir = "/workspace/llm/Mistral-Small-24B-Instruct-2501"
+    adapter_file = "/workspace/output/mistral3small/stage2p3/pytorch_model.bin/pytorch_model.bin"  # Adapter の PyTorch モデルファイル
+    output_file = "/workspace/output/mistral3small/PRWKV-7-Mistral-Small-Instruct-Preview-v0.1.pth"
     
     try:
         print("safetensorファイルのマージを開始します...")
         with torch.no_grad():
             merged_weights = merge_safetensors(input_dir)
-            
             
             if merged_weights is None:
                 print("マージ処理が中断されました。")
@@ -196,8 +195,8 @@ def main():
                     print(f'have head {key}')
                     have_head = True
 
-            if have_head == False:
-                merged_weights['head.weight'] = merged_weights['emb.weight'].clone()
+            #if have_head == False:
+            #    merged_weights['head.weight'] = merged_weights['emb.weight'].clone()
             
             # ---- 最終的にマージした重みを保存 ----
             print(f"\nマージした重みを {output_file} に保存します...")

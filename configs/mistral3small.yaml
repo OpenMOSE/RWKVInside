@@ -5,8 +5,8 @@ RWKV:
 Llama:
   model_id: /workspace/llm/Mistral-Small-24B-Instruct-2501/
 is_llama_ffn: True
-kl_weight: 1.0
-ce_weight: 0.0
+kl_weight: 0.95
+ce_weight: 0.05
 model_file: Mistral-Small-24B-Instruct-2501
 init_with_llama: False
 is_rwkv_att_only: True
