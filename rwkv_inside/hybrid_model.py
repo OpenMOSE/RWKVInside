@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 RWKV_VERSION=os.environ.get('RWKV_VERSION','v7')
 is_rwkv_7 = RWKV_VERSION == 'v7'
 if is_rwkv_7 :
-    from TimeMixer import RWKV_Tmix_x070_Mose_cxa075 as TimeMixer
+    from TimeMixer import RWKV_Tmix_x070_Mose_cxa076 as TimeMixer
     #from TimeMixer import RWKV_Tmix_x070_Mose_v2 as TimeMixer
 else:
     from TimeMixer import RWKV_Tmix_x060 as TimeMixer
