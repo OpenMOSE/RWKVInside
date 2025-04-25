@@ -849,7 +849,7 @@ class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
             D_GATE_LORA = max(32, int(round(  (0.6*(C**0.8))  /32)*32)) # suggestion
             # Note: for some data, you can reduce D_GATE_LORA or even remove this gate
             self.g1 = nn.Parameter(torch.zeros(C, D_GATE_LORA))
-            self.g2 = nn.Parameter(torch.zeros(D_GATE_LORA, C))
+            self.g2 = nn.Parameter(ortho_init(torch.zeros(D_GATE_LORA, C), 0.1))
 
 
             #Change to GQA Style
@@ -897,8 +897,7 @@ class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
         else:
             v = v + (v_first - v) * torch.sigmoid(self.v0 + (x @ self.v1) @ self.v2) # add value residual
 
-        g_delta = torch.sigmoid(x @ self.g1) @ self.g2
-        g = 1.0 + g_delta
+        g = torch.sigmoid(x @ self.g1) @ self.g2
 
         a = torch.sigmoid(self.a0 + (x @ self.a1) @ self.a2) # a is "in-context learning rate"
 
@@ -910,7 +909,7 @@ class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
         x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)
         x = x.view(B,T,-1)
         #Attention Scaling
-        x = x * (C ** -0.5) 
+        x = x * (self.head_size ** -0.5) 
 
         x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
 
