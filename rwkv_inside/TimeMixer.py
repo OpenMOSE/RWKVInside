@@ -772,6 +772,25 @@ class RWKV_Tmix_x070_Mose_cxa075(torch.nn.Module):
         #print(f'layerid = {self.layer_id} r = {is_nan(r,"r")} w = {is_nan(w,"w")} k = {is_nan(k,"k")} v = {is_nan(v,"v")} kk = {is_nan(kk,"kk")} x = {is_nan(x,"x")}')
         return x, v_first
     
+class Qwen3RMSNorm(nn.Module):
+    def __init__(self, hidden_size, eps=1e-6):
+        """
+        Qwen3RMSNorm is equivalent to T5LayerNorm
+        """
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(hidden_size))
+        self.variance_epsilon = eps
+
+    def forward(self, hidden_states):
+        input_dtype = hidden_states.dtype
+        hidden_states = hidden_states.to(torch.float32)
+        variance = hidden_states.pow(2).mean(-1, keepdim=True)
+        hidden_states = hidden_states * torch.rsqrt(variance + self.variance_epsilon)
+        return self.weight * hidden_states.to(input_dtype)
+
+    def extra_repr(self):
+        return f"{tuple(self.weight.shape)}, eps={self.variance_epsilon}"
+
 
 class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
     def __init__(self, args, layer_id):
@@ -786,6 +805,9 @@ class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
         self.num_attention_heads = args.num_attention_heads
         self.num_key_value_heads = args.num_key_value_heads
         self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
+        self.rms_norm_eps = args.rms_norm_eps
+
+        self.RKNormMode = True
 
 
 
@@ -858,6 +880,10 @@ class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
             self.value = nn.Linear(C, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
             self.output = nn.Linear(self.num_attention_heads * self.head_size, C, bias=self.args.is_attention_output_bias)
 
+            if self.RKNormMode == True:
+                self.r_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
+                self.k_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
+
 
             #later copy from teacher weights
             #maybe can copy from any GQA Models
@@ -865,6 +891,9 @@ class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
             self.key.weight.data.zero_()
             self.value.weight.data.zero_()
             self.output.weight.data.zero_()
+
+
+    
            
 
     
@@ -873,9 +902,18 @@ class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
         B, T, C = x.size()
         #removed tokenshift
         H = self.n_head
-        r = self.receptance(x)
+
+
+        if self.RKNormMode == True:
+            r = self.r_norm(self.receptance(x).view(B,T,H,-1))
+            k = self.k_norm(self.key(x).view(B,T,self.num_key_value_heads,-1))
+        else:
+            r = self.receptance(x)
+            k = self.key(x)
+
+        
         w = -F.softplus(-(self.w0 + torch.tanh(x @ self.w1) @ self.w2)) -0.5
-        k = self.key(x)
+        
         v = self.value(x)
 
 

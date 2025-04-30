@@ -110,7 +110,7 @@ def convert_conversation_to_text(example: Dict,tokenizer) -> Dict:
     if len(new_message) == 0:
         return {'text': ""}
     #print(new_message)
-    return {'text': tokenizer.apply_chat_template(new_message, tokenize=False)}
+    return {'text': tokenizer.apply_chat_template(new_message, tokenize=False, enable_thinking=False)}
     # return {'text': "".join(result)}
 
 def convert_conversational_ds_to_text(ds: datasets.Dataset,tokenizer) -> datasets.Dataset:

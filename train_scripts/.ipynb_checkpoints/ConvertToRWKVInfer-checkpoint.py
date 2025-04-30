@@ -139,8 +139,8 @@ def merge_safetensors(input_dir):
 
 def main():
     input_dir = "/workspace/llm/Qwen2.5-14B-Instruct"
-    adapter_file = "/workspace/output/Qwen2.5-14B-Instruct/stage2_cxa075_final_2048/pytorch_model.bin/pytorch_model.bin"  # Adapter の PyTorch モデルファイル
-    output_file = "/workspace/output/Qwen2.5-14B-Instruct/PRWKV7-cxa075-qwen14b-stage2-final.pth"
+    adapter_file = "/workspace/output/Qwen2.5-14B-Instruct/stage2_2048_cxa076/pytorch_model.bin/pytorch_model.bin"  # Adapter の PyTorch モデルファイル
+    output_file = "/workspace/output/Qwen2.5-14B-Instruct/PRWKV7-cxa076-qwen14b-stage2-ctx2048.pth"
     
     try:
         print("safetensorファイルのマージを開始します...")

@@ -651,6 +651,7 @@ if __name__ == '__main__':
     args.num_attention_heads = transformer_model.config.num_attention_heads
     args.num_key_value_heads = transformer_model.config.num_key_value_heads
     args.num_key_value_heads = transformer_model.config.num_key_value_heads
+    args.rms_norm_eps = transformer_model.config.rms_norm_eps
     args.head_size_a = getattr(transformer_model.config, 'head_dim', transformer_model.config.hidden_size // transformer_model.config.num_attention_heads)
     args.is_attention_bias = getattr(transformer_model.config, 'attention_bias', True)
     args.is_attention_output_bias = getattr(transformer_model.config, 'attention_output_bias', False)
@@ -709,10 +710,19 @@ if __name__ == '__main__':
         # for name,param in model.named_parameters():
         #     print(f'{name}')
         #     if 'self_attn.student_attn' in name:
-        weight_mul_r = 0.5
-        weight_mul_k = 0.4
+        # weight_mul_r = 1.0
+        # weight_mul_k = 0.3
+        # weight_mul_v = 0.2
+        # weight_mul_o = 0.5 
+
+        weight_mul_r = 1.0
+        weight_mul_k = 1.0
         weight_mul_v = 0.3
         weight_mul_o = 0.5 
+        # weight_mul_r = 1.0
+        # weight_mul_k = 1.0
+        # weight_mul_v = 1.0
+        # weight_mul_o = 1.0 
         with torch.no_grad():
             for i in range(args.n_layer):
                 print(f'layer = {i} transfer to student')
@@ -811,6 +821,35 @@ if __name__ == '__main__':
                                 if s.shape == param.shape:
                                     param.copy_(s*weight_mul_o)
                                     print('param copied from teacher')
+                                else:
+                                    print('shape is not same')
+                            else:
+                                print('not found')
+                        #
+                        if 'r_norm.weight' in name:
+                            print(f'{name}')
+                            s = SearchTensor(teacher_attn_module_list,f'{i}.q_norm.weight')
+                            if s != None:
+                                if s.shape == param.shape:
+                                    #param = s.clone()
+                                    param.copy_(s)
+                                    #print(param)
+                                    print('param copied from teacher')
+                                    #exit()
+                                else:
+                                    print('shape is not same')
+                            else:
+                                print('not found')
+                        if 'k_norm.weight' in name:
+                            print(f'{name}')
+                            s = SearchTensor(teacher_attn_module_list,f'{i}.k_norm.weight')
+                            if s != None:
+                                if s.shape == param.shape:
+                                    #param = s.clone()
+                                    param.copy_(s)
+                                    #print(param)
+                                    print('param copied from teacher')
+                                    #exit()
                                 else:
                                     print('shape is not same')
                             else:
@@ -946,7 +985,7 @@ if __name__ == '__main__':
                         "device": "cpu",
                         "pin_memory": False,
                         "buffer_count": 4,
-                        'ratio':0.3
+                        'ratio':0.05
                     },
                     # "offload_param": {
                     #     "device": "cpu",
