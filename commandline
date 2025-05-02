@@ -410,3 +410,12 @@ python ./train_scripts/save_checkpoint.py /workspace/output/Qwen3-14B/stage2_cxa
 
 sh train.sh -c configs/qwen3_14b.yaml -l 0.000005 -f 0.000001 -m 3072 -b 7 -a 3 -r "/workspace/r2" -o "/workspace/output/Qwen3-14B/stage2final_cxa076" -k "/workspace/output/Qwen3-14B/stage2_cxa076/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'PRWKV-Qwen3-14B-Stage2final-GQA-cxa076' -N 1
 
+
+python ./train_scripts/save_checkpoint.py /workspace/output/Qwen3-14B/stage2final_cxa076/epoch_0_step_3600 /workspace/output/Qwen3-14B/stage2final_cxa076/pytorch_model.bin
+
+
+sh train.sh -c configs/qwen3_14b.yaml -l 0.000003 -f 0.000003 -m 3072 -b 7 -a 3 -r "/workspace/r2" -o "/workspace/output/Qwen3-14B/stage2final2_cxa076" -k "/workspace/output/Qwen3-14B/stage2final_cxa076/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'PRWKV-Qwen3-14B-Stage2final2-GQA-cxa076' -N 1
+
+python ./train_scripts/save_checkpoint.py /workspace/output/Qwen3-14B/stage2final2_cxa076/epoch_0_step_4800 /workspace/output/Qwen3-14B/stage2final2_cxa076/pytorch_model.bin
+
+
