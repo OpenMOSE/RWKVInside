@@ -46,7 +46,7 @@ import wandb
 import random
 from tqdm import tqdm
 from profiler import timer, time_function
-import bitsandbytes as bnb
+#import bitsandbytes as bnb
 
 
 class RandomLayerFreezingLISA:
@@ -646,13 +646,14 @@ if __name__ == '__main__':
     args.ctx_len = 4096
     args.n_layer = transformer_model.config.num_hidden_layers
     args.n_embd = transformer_model.config.hidden_size
-    args.dim_att = transformer_model.config.hidden_size
+    
     args.dim_ffn = transformer_model.config.intermediate_size
     args.num_attention_heads = transformer_model.config.num_attention_heads
     args.num_key_value_heads = transformer_model.config.num_key_value_heads
     args.num_key_value_heads = transformer_model.config.num_key_value_heads
     args.rms_norm_eps = transformer_model.config.rms_norm_eps
     args.head_size_a = getattr(transformer_model.config, 'head_dim', transformer_model.config.hidden_size // transformer_model.config.num_attention_heads)
+    args.dim_att = transformer_model.config.num_attention_heads * args.head_size_a
     args.is_attention_bias = getattr(transformer_model.config, 'attention_bias', True)
     args.is_attention_output_bias = getattr(transformer_model.config, 'attention_output_bias', False)
     args.pre_ffn = 0
@@ -715,14 +716,14 @@ if __name__ == '__main__':
         # weight_mul_v = 0.2
         # weight_mul_o = 0.5 
 
-        weight_mul_r = 1.0
-        weight_mul_k = 1.0
-        weight_mul_v = 0.3
-        weight_mul_o = 0.5 
         # weight_mul_r = 1.0
         # weight_mul_k = 1.0
-        # weight_mul_v = 1.0
-        # weight_mul_o = 1.0 
+        # weight_mul_v = 0.3
+        # weight_mul_o = 0.5 
+        weight_mul_r = 1.0
+        weight_mul_k = 1.0
+        weight_mul_v = 1.0
+        weight_mul_o = 1.0 
         with torch.no_grad():
             for i in range(args.n_layer):
                 print(f'layer = {i} transfer to student')

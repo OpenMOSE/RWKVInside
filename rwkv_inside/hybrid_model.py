@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 RWKV_VERSION=os.environ.get('RWKV_VERSION','v7')
 is_rwkv_7 = RWKV_VERSION == 'v7'
 if is_rwkv_7 :
-    from TimeMixer import RWKV_Tmix_x070_Mose_cxa076 as TimeMixer
+    from TimeMixer import RWKV_Tmix_x070_Mose_cxa077 as TimeMixer
     #from TimeMixer import RWKV_Tmix_x070_Mose_v2 as TimeMixer
 else:
     from TimeMixer import RWKV_Tmix_x060 as TimeMixer
@@ -284,6 +284,7 @@ class AttentionWrapper(nn.Module):
 
         # NOTE - instead of returning attentions here we return a special attention loss
         hidden_states = kwargs['hidden_states']
+        position_embeddings = kwargs['position_embeddings']
 
         if self.student_attn is not None:
 
@@ -293,12 +294,12 @@ class AttentionWrapper(nn.Module):
             # print(f"kargs={kwargs}")
             if self.args.grad_cp == 1:
                 if is_rwkv_7:
-                    student_hidden_states,v_first = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, v_first, self.attention_mask)
+                    student_hidden_states,v_first = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, v_first, self.attention_mask, position_embeddings)
                 else:
                     student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states)
             else:
                 if is_rwkv_7:
-                    student_hidden_states,v_first = self.student_attn(hidden_states, v_first, self.attention_mask)
+                    student_hidden_states,v_first = self.student_attn(hidden_states, v_first, self.attention_mask, position_embeddings)
                 else:
                     student_hidden_states = self.student_attn(hidden_states)
             self.v_first_state.shared_state.data[self.global_rank].copy_(v_first)
@@ -348,9 +349,9 @@ class AttentionWrapper(nn.Module):
         if self.student_attn is None:
             special_attn_loss = 0.0
         else:
-            special_attn_loss = self.comprehensive_attention_mimicking_loss(teacher_hidden_states,student_hidden_states,self.layer_idx,self.args.n_layer,self.args)
+            #special_attn_loss = self.comprehensive_attention_mimicking_loss(teacher_hidden_states,student_hidden_states,self.layer_idx,self.args.n_layer,self.args)
 
-            #special_attn_loss = torch.linalg.vector_norm(teacher_hidden_states - student_hidden_states, dim=-1).mean() * (teacher_hidden_states[0].size(-1) ** -0.5)
+            special_attn_loss = torch.linalg.vector_norm(teacher_hidden_states - student_hidden_states, dim=-1).mean() * (teacher_hidden_states[0].size(-1) ** -0.5)
         
         #print(f'layer:{self.layer_idx} teacher_hidden_states = {teacher_hidden_states}')
         #print(f'layer:{self.layer_idx} student_hidden_states = {student_hidden_states}')
