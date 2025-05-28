@@ -6,6 +6,55 @@ import random
 import torch
 from typing import List, Optional, Union
 
+from bitsandbytes.nn import Int8Params
+from bitsandbytes.nn import Linear8bitLt
+
+def freeze_as_int8_buffer(model, freeze_names):
+    """
+    model 内の nn.Linear で、名前にパターンが含まれるものを
+    Linear8bitLt に置き換えます（位置引数のみ）。
+    """
+    for name, module in list(model.named_modules()):
+        if isinstance(module, torch.nn.Linear) and any(pat in name for pat in freeze_names):
+            # ここがポイント：全て位置引数で渡す
+            #   (in_features, out_features, bias, has_fp16_weights, threshold)
+            new_mod = Linear8bitLt(
+                module.in_features,
+                module.out_features,
+                module.bias is not None,  # bias フラグ
+                False,                    # has_fp16_weights
+                False,
+                6.0                       # threshold
+            )
+            # 元の weight/bias を引き継ぐ
+            new_mod.weight = module.weight
+            if module.bias is not None:
+                new_mod.bias = module.bias
+
+            # モデル階層上で差し替え
+            parent, attr = model, name.split('.')
+            for p in attr[:-1]:
+                parent = getattr(parent, p)
+            setattr(parent, attr[-1], new_mod)
+def freeze_as_int8_buffer_(model, freeze_names):
+    for name, param in list(model.named_parameters()):
+        print(name)
+        for targetname in freeze_names:
+            if targetname in name:
+                # 1) Int8Params に置き換え
+                int8_p = Int8Params(param.data,
+                                    requires_grad=False,
+                                    )
+                # 2) モジュールのパラメータ辞書から除外し…
+                parent, attr = model, name.split('.')
+                for p in attr[:-1]:
+                    parent = getattr(parent, p)
+                del parent._parameters[attr[-1]]
+                # 3) バッファとして登録
+                parent.register_buffer(attr[-1], int8_p)
+                print(f'{name} {param.dtype}')
+    #exit()
+
 def setup_env():
     parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     rwkv_insidea_path = os.path.join(parent_dir, 'rwkv_inside')
@@ -46,9 +95,13 @@ import wandb
 import random
 from tqdm import tqdm
 from profiler import timer, time_function
-#import bitsandbytes as bnb
+import bitsandbytes as bnb
 
-
+def exclude_int8_params_from_zero(model):
+    for name, param in model.named_parameters():
+        if param.dtype == torch.int8:
+            print(f"[ZeRO Exclude] Excluding int8 param from ZeRO: {name}")
+            param._no_zero3 = True
 class RandomLayerFreezingLISA:
     """
     Implements random layer freezing for LISA (Layer-wise Importance Sampling for Attention).
@@ -146,7 +199,7 @@ class RandomLayerFreezingLISA:
             self._update_frozen_layers()
 
 # 一部のモジュールを量子化する
-def replace_with_bnb_linear(model, module_names=None, threshold=6*1024):
+def replace_with_bnb_linear_(model, module_names=None, threshold=6*1024):
     for name, module in model.named_modules():
         if module_names is not None and not any(mn in name for mn in module_names):
             continue
@@ -164,6 +217,37 @@ def replace_with_bnb_linear(model, module_names=None, threshold=6*1024):
                 requires_grad=False, 
                 quant_type="nf4"
             )
+            if module.bias is not None:
+                newmodule.bias = module.bias
+            # モジュールを置き換え
+            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
+            parent = model if parent_name == '' else model.get_submodule(parent_name)
+            child_name = name.rsplit('.', 1)[1] if '.' in name else name
+            setattr(parent, child_name, newmodule)
+            
+    return model
+
+
+def replace_with_bnb_linear(model, module_names=None, threshold=6*1024):
+    #return model
+    for name, module in model.named_modules():
+        print(f'{name}')
+        if module_names is not None and not any(mn in name for mn in module_names):
+            print('continue')
+            continue
+            
+        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
+            # 4ビットから8ビットに変更
+            newmodule = bnb.nn.Linear8bitLt(
+                module.in_features, 
+                module.out_features, 
+                bias=module.bias is not None,
+                has_fp16_weights=False,  # FP16重みを使用しない
+                threshold=6.0  # 量子化のしきい値
+            )
+            # 重みをコピー（8ビット用）
+            newmodule.weight.data = module.weight.data.clone()
+            
             if module.bias is not None:
                 newmodule.bias = module.bias
             # モジュールを置き換え
@@ -251,6 +335,10 @@ def create_arg_parser():
     parser.add_argument('--max_trained_tokens', type=int, default=100_000_000, help='max trained tokens')
     parser.add_argument('--terminate_at_loss', type=float, default=0, help='terminate the training at loss')
     parser.add_argument('--lisa', type=int, default=1, help='lisa')
+    parser.add_argument('--freeze_attention', type=int, default=1, help='Freeze Receptance,Key,Value')
+    parser.add_argument('--use_bitsandbytes', type=int, default=0, help='apply 8bitlinear with bitsandbytes')
+    parser.add_argument('--hybrid_attention_layers', type=int, default=6, help='Hybrid Attention Layers')
+    parser.add_argument('--freeze_hybrid_attention', type=int, default=1, help='Freeze Hybrid Attention q,k,v')
     return parser
 
 def lr_schedule(args, step):
@@ -648,6 +736,7 @@ if __name__ == '__main__':
     args.n_embd = transformer_model.config.hidden_size
     
     args.dim_ffn = transformer_model.config.intermediate_size
+    args.config = transformer_model.config
     args.num_attention_heads = transformer_model.config.num_attention_heads
     args.num_key_value_heads = transformer_model.config.num_key_value_heads
     args.num_key_value_heads = transformer_model.config.num_key_value_heads
@@ -692,9 +781,9 @@ if __name__ == '__main__':
     model = HybridModel(transformer_model, args, tokenizer)
     model = model.to(dtype=torch.bfloat16)
 
-    # model = replace_with_bnb_linear(model, module_names=["mlp","head"], threshold=0)
+    
 
-    # teacher_attn_module_list = replace_with_bnb_linear(teacher_attn_module_list, module_names=["mlp","head"], threshold=0)
+    
 
     def SearchTensor(model,keyname):
         for name,param in model.named_parameters():
@@ -704,157 +793,298 @@ if __name__ == '__main__':
     
 
     #pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
+
+    print('copy sometensor from teacher model')
+    # for name,param in model.named_parameters():
+    #     print(f'{name}')
+    #     if 'self_attn.student_attn' in name:
+    # weight_mul_r = 1.0
+    # weight_mul_k = 0.3
+    # weight_mul_v = 0.2
+    # weight_mul_o = 0.5 
+
+    # weight_mul_r = 1.0
+    # weight_mul_k = 1.0
+    # weight_mul_v = 0.3
+    # weight_mul_o = 0.5 
+    weight_mul_r = 1.0
+    weight_mul_k = 1.0
+    weight_mul_v = 1.0
+    weight_mul_o = 1.0 
+    with torch.no_grad():
+        for i in range(args.n_layer):
+            print(f'layer = {i} transfer to student')
+            for name,param in model.named_parameters():
+                #print(name)
+                if f'model.layers.{i}.self_attn.student_attn' in name:
+                    if 'receptance.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.q_proj.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                #param = s.clone()
+                                param.copy_(s*weight_mul_r)
+                                #print(param)
+                                print('param copied from teacher')
+                                #exit()
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    elif 'receptance.bias' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.q_proj.bias')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_r)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+
+                    if 'key.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.k_proj.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_k)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    elif 'key.bias' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.k_proj.bias')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_k)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+
+                    
+                    if 'value.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.v_proj.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_v)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    elif 'value.bias' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.v_proj.bias')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_v)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+
+
+                    if 'output.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.o_proj.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_o)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    elif 'output.bias' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.o_proj.bias')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_o)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+
+
+
+
+                    if 'q_proj.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.q_proj.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                #param = s.clone()
+                                param.copy_(s*weight_mul_r)
+                                #print(param)
+                                print('param copied from teacher')
+                                #exit()
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    elif 'q_proj.bias' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.q_proj.bias')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_r)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+
+                    if 'k_proj.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.k_proj.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_k)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    elif 'k_proj.bias' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.k_proj.bias')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_k)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+
+                    
+                    if 'v_proj.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.v_proj.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_v)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    elif 'v_proj.bias' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.v_proj.bias')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_v)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+
+
+                    if 'o_proj.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.o_proj.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_o)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    elif 'o_proj.bias' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.o_proj.bias')
+                        if s != None:
+                            if s.shape == param.shape:
+                                param.copy_(s*weight_mul_o)
+                                print('param copied from teacher')
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    
+
+
+
+
+
+
+
+
+
+                    
+                    if 'r_norm.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.q_norm.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                #param = s.clone()
+                                param.copy_(s)
+                                #print(param)
+                                print('param copied from teacher')
+                                #exit()
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    if 'q_norm.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.q_norm.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                #param = s.clone()
+                                param.copy_(s)
+                                #print(param)
+                                print('param copied from teacher')
+                                #exit()
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+                    if 'k_norm.weight' in name:
+                        print(f'{name}')
+                        s = SearchTensor(teacher_attn_module_list,f'{i}.k_norm.weight')
+                        if s != None:
+                            if s.shape == param.shape:
+                                #param = s.clone()
+                                param.copy_(s)
+                                #print(param)
+                                print('param copied from teacher')
+                                #exit()
+                            else:
+                                print('shape is not same')
+                        else:
+                            print('not found')
+
+
+
+
     if args.ckpt_file is not None:
         model.load_check_point(args.ckpt_file)  
-    else:
-        print('copy sometensor from teacher model')
-        # for name,param in model.named_parameters():
-        #     print(f'{name}')
-        #     if 'self_attn.student_attn' in name:
-        # weight_mul_r = 1.0
-        # weight_mul_k = 0.3
-        # weight_mul_v = 0.2
-        # weight_mul_o = 0.5 
-
-        # weight_mul_r = 1.0
-        # weight_mul_k = 1.0
-        # weight_mul_v = 0.3
-        # weight_mul_o = 0.5 
-        weight_mul_r = 1.0
-        weight_mul_k = 1.0
-        weight_mul_v = 1.0
-        weight_mul_o = 1.0 
-        with torch.no_grad():
-            for i in range(args.n_layer):
-                print(f'layer = {i} transfer to student')
-                for name,param in model.named_parameters():
-                    #print(name)
-                    if f'model.layers.{i}.self_attn.student_attn' in name:
-                        if 'receptance.weight' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.q_proj.weight')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    #param = s.clone()
-                                    param.copy_(s*weight_mul_r)
-                                    #print(param)
-                                    print('param copied from teacher')
-                                    #exit()
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
-                        elif 'receptance.bias' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.q_proj.bias')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    param.copy_(s*weight_mul_r)
-                                    print('param copied from teacher')
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
-
-                        if 'key.weight' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.k_proj.weight')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    param.copy_(s*weight_mul_k)
-                                    print('param copied from teacher')
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
-                        elif 'key.bias' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.k_proj.bias')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    param.copy_(s*weight_mul_k)
-                                    print('param copied from teacher')
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
-
-                        
-                        if 'value.weight' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.v_proj.weight')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    param.copy_(s*weight_mul_v)
-                                    print('param copied from teacher')
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
-                        elif 'value.bias' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.v_proj.bias')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    param.copy_(s*weight_mul_v)
-                                    print('param copied from teacher')
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
 
 
-                        if 'output.weight' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.o_proj.weight')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    param.copy_(s*weight_mul_o)
-                                    print('param copied from teacher')
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
-                        elif 'output.bias' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.o_proj.bias')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    param.copy_(s*weight_mul_o)
-                                    print('param copied from teacher')
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
-                        #
-                        if 'r_norm.weight' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.q_norm.weight')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    #param = s.clone()
-                                    param.copy_(s)
-                                    #print(param)
-                                    print('param copied from teacher')
-                                    #exit()
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
-                        if 'k_norm.weight' in name:
-                            print(f'{name}')
-                            s = SearchTensor(teacher_attn_module_list,f'{i}.k_norm.weight')
-                            if s != None:
-                                if s.shape == param.shape:
-                                    #param = s.clone()
-                                    param.copy_(s)
-                                    #print(param)
-                                    print('param copied from teacher')
-                                    #exit()
-                                else:
-                                    print('shape is not same')
-                            else:
-                                print('not found')
+
+
+    #if args.use_bitsandbytes:
+        # print('bnb')
+        # #exit()
+        # freeze_as_int8_buffer(model, freeze_names=["mlp","head"])
+        # freeze_as_int8_buffer(teacher_attn_module_list, freeze_names=["proj"])
+
+        #inspect_model_parameters(model)
+        #exit()
+        
 
     #exit()
 
@@ -874,13 +1104,34 @@ if __name__ == '__main__':
 
     print(f'Stage1 Only self_attn params are trainable')
     for name,param in model.named_parameters():
-        print(f'{name}')
-        if 'self_attn.student_attn' in name:
-            print(param)
+        Attention = 0
+        for i in range(args.n_layer):
+            t = f'layers.{i}.'
+            if t in name and i < args.n_layer - args.hybrid_attention_layers:
+                Attention = 0
+                break
+            elif t in name:
+                Attention = 1
+                break
+
+
+
+
+        print(f'{name} {param.dtype}')
+        if Attention==0 and args.freeze_attention and ('self_attn.student_attn' in name and ('receptance' in name or 'key' in name or 'value' in name)):
+            param.requires_grad = False
+            print(f'{name} Frozen')
+        elif Attention==1 and args.freeze_hybrid_attention and ('self_attn.student_attn' in name and ('q_proj' in name or 'k_proj' in name or 'v_proj' in name or 'o_proj' in name or 'q_norm' in name or 'k_norm' in name)):
+            param.requires_grad = False
+            print(f'{name} Frozen')
+        #
+        elif 'self_attn.student_attn' in name:
+            print(f'{name} will train!')
             param.requires_grad = True
         else:
             param.requires_grad = False
-    #exit()
+            print(f'{name} Frozen')
+   # exit()
 
     # 准备数据加载器
     if args.preprocessed_data is not None:
@@ -973,20 +1224,19 @@ if __name__ == '__main__':
                 "fp32_reduce_scatter": True,
                 "zero_optimization": {
                     "stage": args.deepspeed_stage,
-                    "stage3_max_live_parameters": 5e8,
-                    "stage3_max_reuse_distance": 5e8,
-                    #"stage3_prefetch_bucket_size": 5e6,
+                    "stage3_max_live_parameters": 1e8,
+                    "stage3_max_reuse_distance": 1e8,
                     "stage3_param_persistence_threshold": 1e4,
                     "memory_efficient_linear": True,
                     "stage3_gather_16bit_weights_on_model_save": False,
-                    "zero_quantized_weights": False,
+                    #"zero_quantized_weights": True,
                     "zero_hpz_partition_size": args.world_size,
                     "zero_quantized_gradients": True,
                     "offload_optimizer": {
                         "device": "cpu",
                         "pin_memory": False,
                         "buffer_count": 4,
-                        'ratio':0.05
+                        'ratio':1.0
                     },
                     # "offload_param": {
                     #     "device": "cpu",
@@ -1001,7 +1251,7 @@ if __name__ == '__main__':
                     "overlap_comm": True,
                     "reduce_scatter": True,
                     #"reduce_bucket_size": 5e6,
-                    "contiguous_gradients": True
+                    #"contiguous_gradients": True
                 },
                 "gradient_clipping": args.gradient_clip_val,
                 "gradient_checkpointing": args.grad_cp == 1,
@@ -1040,8 +1290,11 @@ if __name__ == '__main__':
             # model.model = torch.compile(model.model,fullgraph=True)
             # 初始化 DeepSpeed
             print(f'initializing deepspeed with config {ds_config}')
+        # exclude_int8_params_from_zero(model)
+        trainable_params = (p for p in model.parameters() if p.requires_grad)
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,  
+            model_parameters=trainable_params,
             optimizer=optimizer,
             config=ds_config
         )
@@ -1166,6 +1419,10 @@ if __name__ == '__main__':
                     "stage3_prefetch_bucket_size": 5e6,
                     "memory_efficient_linear": True,
                     "stage3_param_persistence_threshold": 1e4,
+
+                    #"zero_quantized_weights": True,
+                    "zero_hpz_partition_size": args.world_size,
+                    "zero_quantized_gradients": True,
                     # "offload_param": {
                     #     "device": "cpu",
                     #     "pin_memory": False,
@@ -1188,9 +1445,13 @@ if __name__ == '__main__':
                 "dump_state": True
             }
             teacher_attn_module_list.requires_grad_(False)
+            
+            #teacher_trainable_params = (p for p in teacher_attn_module_list.parameters() if p.requires_grad)
+            # exclude_int8_params_from_zero(teacher_attn_module_list)
             teacher_engine, _, _, _ = deepspeed.initialize(
                 model=teacher_attn_module_list,
-                config=ds_config
+                config=ds_config,
+                #model_parameters=teacher_trainable_params,
             )
             # 遍历所有层
             for layer_idx in args.layers:

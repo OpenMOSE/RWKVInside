@@ -3,7 +3,7 @@ from torch.utils.cpp_extension import load
 
 print('backstepping longhead mode with CUDA or HIP')
 
-CHUNK_LEN = 8
+CHUNK_LEN = 16
 
 HEAD_SIZE = int(os.environ["RWKV_HEAD_SIZE_A"])
 HEAD = int(os.environ["RWKV_HEAD"])
@@ -55,7 +55,7 @@ def load_backstepping_longhead(head_size, batchsz_times_heads_estimate = 8*64):
     if 'AMD' in device_props.name:
         value_chunk_size = 16
         # i hard coded gfx942=mi300x, because gfx1030 cannot compile
-        CUDA_FLAGS = [f'-D_C_={head_size}', f'-D_K_={value_chunk_size}', f'-D_CHUNK_LEN_={CHUNK_LEN}', '-O3', '-ffast-math', '-DAMD', '--offload-arch=gfx942']
+        CUDA_FLAGS = [f'-D_C_={head_size}', f'-D_K_={value_chunk_size}', f'-D_CHUNK_LEN_={CHUNK_LEN}', '-O3', '-ffast-math', '-DAMD', '--offload-arch=gfx1100']
     else:
         value_chunk_size = 64
         if th.cuda.get_device_properties(th.cuda.current_device()).multi_processor_count >= batchsz_times_heads_estimate * head_size / 32:

@@ -252,7 +252,7 @@ def train_step(model, batch, args, teacher_engine=None, tokenizer=None):
         
 
     # attention_mask = torch.ne(input_ids, tokenizer.pad_token_id).to(input_ids.device)
-
+ 
     # 4. 根据不同模式处理
     if args.is_sft:
         outputs = model(input_ids=input_ids, 
@@ -416,10 +416,10 @@ def compute_kl_loss(student_outputs, teacher_logits, labels, args, attention_mas
 
       
     # 温度スケーリングを適用したロジットの計算
-    student_logits_scaled = student_logits / temperature
+    #student_logits_scaled = student_logits / temperature
     
     # Compute softmax for student and teacher with temperature scaling
-    log_probs_student = F.log_softmax(student_logits_scaled, dim=-1)  # [batch_size, seq_len, vocab_size]
+    log_probs_student = F.log_softmax(student_logits, dim=-1)  # [batch_size, seq_len, vocab_size]
     with torch.no_grad():
         teacher_logits_scaled = teacher_logits / temperature
         targets = F.softmax(teacher_logits_scaled, dim=-1)    # [batch_size, seq_len, vocab_size]
@@ -443,7 +443,7 @@ def compute_kl_loss(student_outputs, teacher_logits, labels, args, attention_mas
         kl_loss = kl_div_per_token.mean()
     
     # 温度スケーリングによる勾配補正
-    kl_loss = (temperature ** 2) * kl_loss
+    #kl_loss = (temperature ** 2) * kl_loss
 
     del log_probs_student, targets, kl_div_all, kl_div_per_token
     
@@ -460,7 +460,7 @@ def compute_kl_loss(student_outputs, teacher_logits, labels, args, attention_mas
 
 
 @time_function
-def compute_kl_loss_(student_outputs, teacher_logits, labels, args, attention_mask=None, chunk_size=4096, topk=10000):
+def compute_kl_loss_(student_outputs, teacher_logits, labels, args, attention_mask=None, chunk_size=4096, topk=50000):
     student_logits = student_outputs.logits  # shape: [batch_size, seq_len, vocab_size]
     vocab_student = student_logits.shape[-1]
     vocab_teacher = teacher_logits.shape[-1]

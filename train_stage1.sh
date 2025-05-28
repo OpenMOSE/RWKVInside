@@ -21,8 +21,8 @@ export WKV=""
 DEEPSTATE_STAGE=3
 MAX_TRAINED_TOKENS=100_000_000
 TERMINATE_LOSS=0.01
-WANDB=runpod-rwkv-dominator-nyan-isback
-WANDB_PROJECT=runpod-rwkv-dominator-nyan-isback
+WANDB=runpod-rwkv-dominator-cxa077
+WANDB_PROJECT=runpod-rwkv-dominator-cxa077
 HAS_GROUP_NOMR=""
 FREEZE_MLP=""
 TEACHER_MODEL_ID=""
@@ -98,7 +98,7 @@ deepspeed \
     --warmup_steps $WARMUP_STEPS \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --world_size $WORLD_SIZE \
-    --save_per_batches 200 \
+    --save_per_batches 400 \
     $CKPT_FILE \
     --stage $STAGE \
     --terminate_at_loss $TERMINATE_LOSS \

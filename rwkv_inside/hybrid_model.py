@@ -1,10 +1,17 @@
 import sys
 import os
 from typing import Optional, Tuple
+import torch._dynamo
+
+# たとえば、再コンパイルの上限を256回に設定
+torch._dynamo.config.recompile_limit = 256
+
+
 RWKV_VERSION=os.environ.get('RWKV_VERSION','v7')
 is_rwkv_7 = RWKV_VERSION == 'v7'
 if is_rwkv_7 :
-    from TimeMixer import RWKV_Tmix_x070_Mose_cxa077 as TimeMixer
+    from TimeMixer import RWKV_Tmix_x070_Mose_cxa078 as TimeMixer
+    from TimeMixer import GQAWithRopeAttention as SelfAttention
     #from TimeMixer import RWKV_Tmix_x070_Mose_v2 as TimeMixer
 else:
     from TimeMixer import RWKV_Tmix_x060 as TimeMixer
@@ -285,6 +292,9 @@ class AttentionWrapper(nn.Module):
         # NOTE - instead of returning attentions here we return a special attention loss
         hidden_states = kwargs['hidden_states']
         position_embeddings = kwargs['position_embeddings']
+        position_ids = kwargs['position_ids']
+        attention_mask = kwargs['attention_mask']
+        #print(f'{(attention_mask.shape)}')
 
         if self.student_attn is not None:
 
@@ -294,24 +304,33 @@ class AttentionWrapper(nn.Module):
             # print(f"kargs={kwargs}")
             if self.args.grad_cp == 1:
                 if is_rwkv_7:
-                    student_hidden_states,v_first = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, v_first, self.attention_mask, position_embeddings)
+                    if self.student_attn.Attention:
+                        if self.args.freeze_hybrid_attention:
+                            with torch.no_grad():
+                                #student_hidden_states = self.student_attn(hidden_states, position_embeddings)
+                                teacher_outputs = self.teacher_attn(*args, **kwargs)
+                                student_hidden_states = teacher_outputs[0]
+                        else:
+                            student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, position_embeddings)
+                    else:
+                        student_hidden_states,v_first = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, v_first, self.attention_mask, position_embeddings,position_ids)
+                        self.v_first_state.shared_state.data[self.global_rank].copy_(v_first)
                 else:
+                    # we not using
                     student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states)
-            else:
-                if is_rwkv_7:
-                    student_hidden_states,v_first = self.student_attn(hidden_states, v_first, self.attention_mask, position_embeddings)
-                else:
-                    student_hidden_states = self.student_attn(hidden_states)
-            self.v_first_state.shared_state.data[self.global_rank].copy_(v_first)
+    
+            
             #print(student_hidden_states)
             if self.args.stage != 1:
                 return (student_hidden_states, None)
             # student_outputs = self.student_attn(hidden_states)
 
 
-
-        with torch.no_grad():
-            teacher_outputs = self.teacher_attn(*args, **kwargs)
+        if self.student_attn.Attention and self.args.freeze_hybrid_attention:
+                teacher_outputs = teacher_outputs
+        else:
+            with torch.no_grad():
+                teacher_outputs = self.teacher_attn(*args, **kwargs)
         # special attention loss is the vector norm of the difference between the student and teacher attn outputs
         # student_hidden_states = student_outputs[0]
         teacher_hidden_states = teacher_outputs[0]
@@ -352,7 +371,9 @@ class AttentionWrapper(nn.Module):
             #special_attn_loss = self.comprehensive_attention_mimicking_loss(teacher_hidden_states,student_hidden_states,self.layer_idx,self.args.n_layer,self.args)
 
             special_attn_loss = torch.linalg.vector_norm(teacher_hidden_states - student_hidden_states, dim=-1).mean() * (teacher_hidden_states[0].size(-1) ** -0.5)
-        
+        # if self.layer_idx == 0:
+        #     print(f'Teacher = {teacher_hidden_states}')
+        #     print(f'Student = {student_hidden_states}')
         #print(f'layer:{self.layer_idx} teacher_hidden_states = {teacher_hidden_states}')
         #print(f'layer:{self.layer_idx} student_hidden_states = {student_hidden_states}')
         #print(f'layer:{self.layer_idx} special_attn_loss = {special_attn_loss}')
@@ -402,24 +423,15 @@ class HybridModel(nn.Module):
                 transformer_model.get_output_embeddings().weight = nn.Parameter(transformer_model.get_input_embeddings().weight.clone())
                 # untie the embeddings in the config, too
                 transformer_model.tie_word_embeddings = False
+        self.args = rwkv_args
 
         for layer_idx in range(transformer_model.config.num_hidden_layers):
             if layer_idx in rwkv_args.layers:
-                #Only replace the attention layer with TimeMixer
-                # EnableStudent = True
-                # if layerprofile is not None:
-                #     EnableStudent = False
-                #     for i in range(len(layerprofile)):
-                #         enablelayer = layerprofile[i]
-                #         if enablelayer == layer_idx:
-                #             EnableStudent = True
 
-                # if EnableStudent:
-                #     student_attn = TimeMixer(rwkv_args, layer_idx)
-                # else:
-                #     student_attn = None
-
-                student_attn = TimeMixer(rwkv_args, layer_idx)
+                if layer_idx < (transformer_model.config.num_hidden_layers - self.args.hybrid_attention_layers):
+                    student_attn = TimeMixer(rwkv_args, layer_idx)
+                else:
+                    student_attn = SelfAttention(rwkv_args, layer_idx)
 
 
 
@@ -429,7 +441,7 @@ class HybridModel(nn.Module):
                 gc.collect()
         self.model = transformer_model
         self.add_module("model", self.model)
-        self.args = rwkv_args
+        
         self.teacher_model = None  # 初始化为None，后续再设置
         self.tokenizer = tokenizer
         if self.tokenizer is not None:
@@ -439,7 +451,7 @@ class HybridModel(nn.Module):
         torch.cuda.empty_cache()
         self.client = None
 
-    #
+    #@torch.compile
     def forward(
         self,
         input_ids,
