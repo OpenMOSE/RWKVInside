@@ -72,7 +72,7 @@ WORLD_SIZE=$((NNODES * GPUS_PER_NODE))
 deepspeed \
     --num_nodes $NNODES \
     --num_gpus $GPUS_PER_NODE \
-    train_scripts/train_hybrid_deepspeed2_stage1.py \
+    train_scripts/train_hybrid_deepspeed2_stage2.py \
     --deepspeed \
     $DEEPSPEED_OFFLOAD \
     $FULL_PARAMS \
@@ -98,7 +98,7 @@ deepspeed \
     --warmup_steps $WARMUP_STEPS \
     --train_batch_size $TRAIN_BATCH_SIZE \
     --world_size $WORLD_SIZE \
-    --save_per_batches 400 \
+    --save_per_batches 1000 \
     $CKPT_FILE \
     --stage $STAGE \
     --terminate_at_loss $TERMINATE_LOSS \

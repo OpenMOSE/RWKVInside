@@ -122,9 +122,9 @@ def create_arg_parser():
     parser.add_argument('--stage', type=int, default=1,choices=[1,2,3], help='stage 1 only align attn output and stage 2 do kl-divergence,and stage 3 do SFT')
     parser.add_argument('--max_trained_tokens', type=int, default=100_000_000, help='max trained tokens')
     parser.add_argument('--terminate_at_loss', type=float, default=0, help='terminate the training at loss')
-    parser.add_argument('--freeze_attention', type=int, default=0, help='Freeze Receptance,Key,Value')
+    parser.add_argument('--freeze_attention', type=int, default=1, help='Freeze Receptance,Key,Value')
     parser.add_argument('--use_bitsandbytes', type=int, default=0, help='apply 8bitlinear with bitsandbytes')
-    parser.add_argument('--hybrid_attention_layers', type=int, default=4, help='Hybrid Attention Layers')
+    parser.add_argument('--hybrid_attention_layers', type=int, default=6, help='Hybrid Attention Layers')
     parser.add_argument('--freeze_hybrid_attention', type=int, default=1, help='Freeze Hybrid Attention q,k,v')
     return parser
 

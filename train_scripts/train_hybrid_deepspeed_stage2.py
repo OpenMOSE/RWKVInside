@@ -5,56 +5,6 @@ import torch.nn as nn
 import random
 import torch
 from typing import List, Optional, Union
-
-from bitsandbytes.nn import Int8Params
-from bitsandbytes.nn import Linear8bitLt
-
-def freeze_as_int8_buffer(model, freeze_names):
-    """
-    model 内の nn.Linear で、名前にパターンが含まれるものを
-    Linear8bitLt に置き換えます（位置引数のみ）。
-    """
-    for name, module in list(model.named_modules()):
-        if isinstance(module, torch.nn.Linear) and any(pat in name for pat in freeze_names):
-            # ここがポイント：全て位置引数で渡す
-            #   (in_features, out_features, bias, has_fp16_weights, threshold)
-            new_mod = Linear8bitLt(
-                module.in_features,
-                module.out_features,
-                module.bias is not None,  # bias フラグ
-                False,                    # has_fp16_weights
-                False,
-                6.0                       # threshold
-            )
-            # 元の weight/bias を引き継ぐ
-            new_mod.weight = module.weight
-            if module.bias is not None:
-                new_mod.bias = module.bias
-
-            # モデル階層上で差し替え
-            parent, attr = model, name.split('.')
-            for p in attr[:-1]:
-                parent = getattr(parent, p)
-            setattr(parent, attr[-1], new_mod)
-def freeze_as_int8_buffer_(model, freeze_names):
-    for name, param in list(model.named_parameters()):
-        print(name)
-        for targetname in freeze_names:
-            if targetname in name:
-                # 1) Int8Params に置き換え
-                int8_p = Int8Params(param.data,
-                                    requires_grad=False,
-                                    )
-                # 2) モジュールのパラメータ辞書から除外し…
-                parent, attr = model, name.split('.')
-                for p in attr[:-1]:
-                    parent = getattr(parent, p)
-                del parent._parameters[attr[-1]]
-                # 3) バッファとして登録
-                parent.register_buffer(attr[-1], int8_p)
-                print(f'{name} {param.dtype}')
-    #exit()
-
 def setup_env():
     parent_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
     rwkv_insidea_path = os.path.join(parent_dir, 'rwkv_inside')
@@ -85,179 +35,17 @@ import yaml
 import torch
 import deepspeed
 from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from train_functions import configure_optimizer, train_step
+#from hybrid_model import HybridModel,VFirstHolder
+from train_functions import configure_optimizer_stage2, train_step
 import datasets
 import json
 import math
 import time
 import wandb
-import random
 from tqdm import tqdm
 from profiler import timer, time_function
-import bitsandbytes as bnb
-
-def exclude_int8_params_from_zero(model):
-    for name, param in model.named_parameters():
-        if param.dtype == torch.int8:
-            print(f"[ZeRO Exclude] Excluding int8 param from ZeRO: {name}")
-            param._no_zero3 = True
-class RandomLayerFreezingLISA:
-    """
-    Implements random layer freezing for LISA (Layer-wise Importance Sampling for Attention).
-    Specifically targets model.model.layers.*.self_attn.student_attn components.
-    """
-    def __init__(
-        self,
-        model_engine,
-        num_hidden_layers,
-        freeze_ratio: float = 0.5,
-        target_pattern: str = "self_attn.student_attn",
-        seed: Optional[int] = 0,
-        update_freq: int = 100,
-    ):
-        """
-        Initialize RandomLayerFreezingLISA.
-        
-        Args:
-            model_engine: DeepSpeed model engine
-            freeze_ratio: Ratio of layers to freeze (between 0.0 and 1.0)
-            target_pattern: Pattern to match for freezing layers
-            seed: Random seed for reproducibility
-            update_freq: Frequency of updating frozen layers (in steps)
-        """
-        self.model_engine = model_engine
-        self.freeze_ratio = freeze_ratio
-        self.target_pattern = target_pattern
-        self.update_freq = update_freq
-        self.step_counter = 0
-        
-        # Set random seed if provided
-        if seed is not None:
-            random.seed(seed)
-            
-        # Get the number of layers
-        self.num_layers = num_hidden_layers#self.model_engine.module.config.num_hidden_layers
-        
-        # Initialize list of layers
-        self.all_layers = list(range(self.num_layers))
-        self.frozen_layers = []
-        
-        # Initialize freezing
-        self._update_frozen_layers()
-    
-    def _update_frozen_layers(self):
-        """Update which layers are frozen based on random selection."""
-        # Calculate number of layers to freeze
-        num_frozen = int(self.num_layers * self.freeze_ratio)
-        
-        # Randomly select layers to freeze
-        self.frozen_layers = random.sample(self.all_layers, num_frozen)
-        
-        # Apply freezing
-        self._apply_freezing()
-        
-        #if self.model_engine.global_rank == 0:
-        print(f"Updated frozen layers: {self.frozen_layers}")
-    
-    def _apply_freezing(self):
-        """Apply freezing to selected layers."""
-        # First unfreeze all layers
-        self._unfreeze_all_layers()
-        
-        # Then freeze selected layers
-        for layer_idx in self.frozen_layers:
-            # Get the layer
-            layer = self.model_engine.module.model.model.layers[layer_idx]
-            
-            # Find and freeze student attention parameters
-            for name, param in layer.named_parameters():
-                if self.target_pattern in name:
-                    param.requires_grad = False
-                    param.grad = None
-
-        torch.cuda.empty_cache()
-        
-    
-    def _unfreeze_all_layers(self):
-        """Unfreeze all layers."""
-        for layer_idx in range(self.num_layers):
-            layer = self.model_engine.module.model.model.layers[layer_idx]
-            for name, param in layer.named_parameters():
-                if self.target_pattern in name:
-                    param.requires_grad = True
-    
-    def step(self):
-        """
-        Step function to be called during training loop.
-        Updates frozen layers based on update frequency.
-        """
-        self.step_counter += 1
-        
-        # Update frozen layers if it's time
-        if self.step_counter % self.update_freq == 0:
-            self._update_frozen_layers()
-
-# 一部のモジュールを量子化する
-def replace_with_bnb_linear_(model, module_names=None, threshold=6*1024):
-    for name, module in model.named_modules():
-        if module_names is not None and not any(mn in name for mn in module_names):
-            continue
-            
-        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
-            newmodule = bnb.nn.Linear4bit(
-                module.in_features, 
-                module.out_features, 
-                bias=module.bias is not None,
-                compute_dtype=torch.bfloat16
-            )
-            # 重みを変換
-            newmodule.weight = bnb.nn.Params4bit(
-                module.weight.data, 
-                requires_grad=False, 
-                quant_type="nf4"
-            )
-            if module.bias is not None:
-                newmodule.bias = module.bias
-            # モジュールを置き換え
-            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
-            parent = model if parent_name == '' else model.get_submodule(parent_name)
-            child_name = name.rsplit('.', 1)[1] if '.' in name else name
-            setattr(parent, child_name, newmodule)
-            
-    return model
-
-
-def replace_with_bnb_linear(model, module_names=None, threshold=6*1024):
-    #return model
-    for name, module in model.named_modules():
-        print(f'{name}')
-        if module_names is not None and not any(mn in name for mn in module_names):
-            print('continue')
-            continue
-            
-        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
-            # 4ビットから8ビットに変更
-            newmodule = bnb.nn.Linear8bitLt(
-                module.in_features, 
-                module.out_features, 
-                bias=module.bias is not None,
-                has_fp16_weights=False,  # FP16重みを使用しない
-                threshold=6.0  # 量子化のしきい値
-            )
-            # 重みをコピー（8ビット用）
-            newmodule.weight.data = module.weight.data.clone()
-            
-            if module.bias is not None:
-                newmodule.bias = module.bias
-            # モジュールを置き換え
-            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
-            parent = model if parent_name == '' else model.get_submodule(parent_name)
-            child_name = name.rsplit('.', 1)[1] if '.' in name else name
-            setattr(parent, child_name, newmodule)
-            
-    return model
-
+from transformers import BitsAndBytesConfig
+#import bitsandbytes as bnb
 
 def create_arg_parser():
     node_rank = int(os.environ.get('NODE_RANK', 0))
@@ -284,12 +72,12 @@ def create_arg_parser():
     parser.add_argument('--grad_cp', type=int, default=0, help='gradient checkpoint in the model')
     parser.add_argument('--save_per_batches', type=int, default=10000, help='number of batches to save the model')
     parser.add_argument('--my_exit', type=int, default=300, help='exit condition in the model')
-    parser.add_argument('--weight_decay', type=float, default=0.1, help='weight decay in the model')
+    parser.add_argument('--weight_decay', type=float, default=0.001, help='weight decay in the model')
     parser.add_argument('--lr_init', type=float, default=6e-4, help='initial learning rate in the model')
     parser.add_argument('--lr_final', type=float, default=1e-5, help='final learning rate in the model')
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 parameter in the Adam optimizer')
-    parser.add_argument('--beta2', type=float, default=0.95, help='beta2 parameter in the Adam optimizer')
-    parser.add_argument('--layerwise_lr', type=float, nargs='+', default=1, help='layerwise learning rate in the model')
+    parser.add_argument('--beta2', type=float, default=0.98, help='beta2 parameter in the Adam optimizer')
+    parser.add_argument('--layerwise_lr', type=float, nargs='+', default=0, help='layerwise learning rate in the model')
     parser.add_argument('--adam_eps', type=float, default=1e-8, help='epsilon parameter in the Adam optimizer')
     parser.add_argument('--warmup_steps', type=int, default=50, help='warmup steps in the model')
     parser.add_argument('--epoch_begin', type=int, default=0, help='beginning epoch for the training')
@@ -334,7 +122,6 @@ def create_arg_parser():
     parser.add_argument('--stage', type=int, default=1,choices=[1,2,3], help='stage 1 only align attn output and stage 2 do kl-divergence,and stage 3 do SFT')
     parser.add_argument('--max_trained_tokens', type=int, default=100_000_000, help='max trained tokens')
     parser.add_argument('--terminate_at_loss', type=float, default=0, help='terminate the training at loss')
-    parser.add_argument('--lisa', type=int, default=1, help='lisa')
     parser.add_argument('--freeze_attention', type=int, default=0, help='Freeze Receptance,Key,Value')
     parser.add_argument('--use_bitsandbytes', type=int, default=0, help='apply 8bitlinear with bitsandbytes')
     parser.add_argument('--hybrid_attention_layers', type=int, default=6, help='Hybrid Attention Layers')
@@ -393,6 +180,63 @@ def on_train_batch_start(args, model_engine, global_step, epoch):
             f.write(f"NEW RUN {time.strftime('%Y-%m-%d %H:%M:%S')}\n{vars(args)}\n")
 
     return lr, wd_now
+
+# 一部のモジュールを量子化する
+def replace_with_bnb_linear_(model, module_names=None, threshold=6*1024):
+    for name, module in model.named_modules():
+        if module_names is not None and not any(mn in name for mn in module_names):
+            continue
+            
+        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
+            newmodule = bnb.nn.Linear4bit(
+                module.in_features, 
+                module.out_features, 
+                bias=module.bias is not None,
+                compute_dtype=torch.bfloat16
+            )
+            # 重みを変換
+            newmodule.weight = bnb.nn.Params4bit(
+                module.weight.data, 
+                requires_grad=False, 
+                quant_type="nf4"
+            )
+            if module.bias is not None:
+                newmodule.bias = module.bias
+            # モジュールを置き換え
+            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
+            parent = model if parent_name == '' else model.get_submodule(parent_name)
+            child_name = name.rsplit('.', 1)[1] if '.' in name else name
+            setattr(parent, child_name, newmodule)
+            
+    return model
+
+def replace_with_bnb_linear(model, module_names=None, threshold=6*1024):
+    return model
+    for name, module in model.named_modules():
+        if module_names is not None and not any(mn in name for mn in module_names):
+            continue
+            
+        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
+            # 4ビットから8ビットに変更
+            newmodule = bnb.nn.Linear8bitLt(
+                module.in_features, 
+                module.out_features, 
+                bias=module.bias is not None,
+                has_fp16_weights=False,  # FP16重みを使用しない
+                threshold=6.0  # 量子化のしきい値
+            )
+            # 重みをコピー（8ビット用）
+            newmodule.weight.data = module.weight.data.clone()
+            
+            if module.bias is not None:
+                newmodule.bias = module.bias
+            # モジュールを置き換え
+            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
+            parent = model if parent_name == '' else model.get_submodule(parent_name)
+            child_name = name.rsplit('.', 1)[1] if '.' in name else name
+            setattr(parent, child_name, newmodule)
+            
+    return model
 
 # 在主训练循环开始前初始化tqdm
 pbar = None
@@ -472,7 +316,7 @@ def on_train_batch_end(args, batch_idx, model_engine,teacher_engine, loss, teach
     return current_time, pbar
 import torch.distributed as dist
 def setup_distributed():
-    dist.init_process_group(backend='rccl')
+    dist.init_process_group(backend='nccl')
     torch.cuda.set_device(int(os.environ["LOCAL_RANK"]))
 import contextlib
 from typing import List
@@ -518,225 +362,57 @@ class TeacherAttnManager:
                     attention_wrapper.v_first_state = v_first_state
             # 清空存储的引用
             self.stored_teacher_attns.clear()
-
-# 方法1: DeepSpeedのquantization_infoメソッドを使用する（利用可能な場合）
-def check_quantization_deepspeed_api(model_engine):
-    """DeepSpeedのAPIを使用して量子化状態を確認する"""
-    if hasattr(model_engine, 'quantization_info'):
-        quant_info = model_engine.quantization_info()
-        print("Quantization info from DeepSpeed API:", quant_info)
-        return quant_info
-    else:
-        print("quantization_info メソッドが見つかりません。代替方法を使用します。")
-        return None
-
-# 方法2: モデルの内部状態を調査する
-def inspect_model_parameters(model_engine):
-    """モデルパラメータを調査して量子化状態を確認する"""
-    print("\n=== モデルパラメータの調査 ===")
-    
-    # DeepSpeedエンジンから実際のモデルを取得
-    model = model_engine.module
-    
-    # 量子化されているはずのパラメータに関する情報を収集
-    stats = {
-        'total_params': 0,
-        'quantized_params': 0,
-        'mlp_params': 0,
-        'mlp_quantized': 0,
-        'param_dtypes': {},
-        'param_shapes': {}
-    }
-    
-    # モジュールとパラメータを調査
-    for name, module in model.named_modules():
-        is_mlp = 'mlp' in name.lower()
-        
-        # 各モジュールのパラメータを調査
-        for param_name, param in module.named_parameters(recurse=False):
-            full_name = f"{name}.{param_name}"
-            stats['total_params'] += 1
-            
-            # データ型を記録
-            dtype_str = str(param.dtype)
-            stats['param_dtypes'][dtype_str] = stats['param_dtypes'].get(dtype_str, 0) + 1
-            
-            # パラメータの形状を記録
-            shape_str = str(list(param.shape))
-            stats['param_shapes'][shape_str] = stats['param_shapes'].get(shape_str, 0) + 1
-            
-            # MLPパラメータの場合は別途カウント
-            if is_mlp:
-                stats['mlp_params'] += 1
-                
-                # 量子化されたパラメータの検出
-                # 4ビット量子化の場合、通常はInt8張力になるか特殊な属性を持つ
-                if hasattr(param, '_quantized') or hasattr(param, 'quant_state'):
-                    stats['mlp_quantized'] += 1
-                    stats['quantized_params'] += 1
-                # または型やサイズから推測
-                elif param.dtype == torch.int8 or param.dtype == torch.uint8:
-                    stats['mlp_quantized'] += 1
-                    stats['quantized_params'] += 1
-            # 非MLPパラメータでも量子化検出
-            elif hasattr(param, '_quantized') or hasattr(param, 'quant_state') or param.dtype in [torch.int8, torch.uint8]:
-                stats['quantized_params'] += 1
-    
-    # 結果表示
-    print(f"合計パラメータ数: {stats['total_params']}")
-    print(f"量子化されたパラメータ数: {stats['quantized_params']}")
-    print(f"MLPパラメータ数: {stats['mlp_params']}")
-    print(f"量子化されたMLPパラメータ数: {stats['mlp_quantized']}")
-    print(f"データ型分布: {stats['param_dtypes']}")
-    print(f"パラメータ形状分布: {len(stats['param_shapes'])} 種類")
-    
-    return stats
-
-# 方法3: DeepSpeedの内部状態ダンプを使用する
-def check_deepspeed_state(model_engine):
-    """DeepSpeedの内部状態をダンプして確認する"""
-    if hasattr(model_engine, 'dump_state'):
-        print("\n=== DeepSpeedの状態ダンプ ===")
-        state = model_engine.dump_state()
-        
-        # 量子化関連の設定を確認
-        if 'quantization' in state:
-            print("量子化設定:", state['quantization'])
-        elif 'weight_quantization' in state:
-            print("重み量子化設定:", state['weight_quantization'])
-        else:
-            print("状態ダンプに量子化情報が見つかりません")
-        
-        return state
-    else:
-        print("dump_stateメソッドが見つかりません")
-        return None
-
-# 方法4: ログファイルから確認する（ランク0のプロセスのみで実行）
-def check_logs_for_quantization(args):
-    """ログファイルから量子化情報を確認する"""
-    if args.local_rank == 0:  # ランク0のプロセスのみで実行
-        print("\n=== ログファイルの確認 ===")
-        import glob
-        import os
-        
-        # DeepSpeedのログディレクトリを探す
-        log_dirs = glob.glob('./deepspeed_*') + glob.glob('./logs/deepspeed_*')
-        
-        for log_dir in log_dirs:
-            log_files = glob.glob(os.path.join(log_dir, '*.log'))
-            for log_file in log_files:
-                print(f"ログファイル {log_file} を確認中...")
-                with open(log_file, 'r') as f:
-                    log_content = f.read()
-                    
-                    # 量子化関連のログエントリを探す
-                    quant_logs = [line for line in log_content.split('\n') 
-                                  if 'quant' in line.lower() or 'bit' in line.lower()]
-                    
-                    if quant_logs:
-                        print("量子化関連のログエントリ:")
-                        for line in quant_logs:
-                            print(f"  {line}")
-                    else:
-                        print("  量子化関連のログエントリが見つかりません")
-
-# 方法5: 実際のデータを表示して確認
-def inspect_actual_weights(model_engine):
-    """実際の重みデータを調査して量子化を確認する"""
-    model = model_engine.module
-    
-    print("\n=== 実際の重みデータの調査 ===")
-    # MLPモジュールを探す
-    mlp_modules = [(name, module) for name, module in model.named_modules() 
-                   if 'mlp' in name.lower()]
-    
-    for name, module in mlp_modules[:2]:  # 最初の2つだけ表示（多すぎないように）
-        print(f"\nモジュール: {name}")
-        for param_name, param in module.named_parameters(recurse=False):
-            print(f"  パラメータ: {param_name}")
-            print(f"    形状: {param.shape}")
-            print(f"    データ型: {param.dtype}")
-            
-            # パラメータの統計を表示
-            if param.numel() > 0:
-                try:
-                    param_data = param.data
-                    print(f"    最小値: {param_data.min().item()}")
-                    print(f"    最大値: {param_data.max().item()}")
-                    print(f"    ユニークな値の数: {torch.unique(param_data).numel()}")
-                    
-                    # 4ビット量子化された場合、ユニーク値は最大16個になるはず
-                    if torch.unique(param_data).numel() <= 16:
-                        print("    *** このパラメータは4ビット量子化されている可能性が高い ***")
-                    elif torch.unique(param_data).numel() <= 256:
-                        print("    *** このパラメータは8ビット量子化されている可能性が高い ***")
-                except Exception as e:
-                    print(f"    エラー: {e}")
-
-# すべての確認方法を実行
-def verify_quantization(model_engine):
-    """量子化状態を総合的に確認する"""
-    print("\n=== 量子化状態の確認 ===")
-    
-    # 方法1: DeepSpeedのAPI
-    check_quantization_deepspeed_api(model_engine)
-    
-    # 方法2: モデルパラメータの調査
-    inspect_model_parameters(model_engine)
-    
-    # 方法3: DeepSpeedの状態ダンプ
-    check_deepspeed_state(model_engine)
-    
-    ## 方法4: ログファイルの確認
-    #check_logs_for_quantization(args)
-    
-    # 方法5: 実際の重みデータの調査
-    inspect_actual_weights(model_engine)
-
-
 if __name__ == '__main__':
     parser = create_arg_parser()
     args = parser.parse_args()
-
-    
-
-
     if 'LOCAL_RANK' in os.environ:
         args.local_rank = int(os.environ['LOCAL_RANK'])
     print(args)
-
+    # if args.num_nodes > 1:
     deepspeed.init_distributed()
-
+        # setup_distributed()
     # 加载配置
     with open(args.config_file) as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
     print(config)
-    #print(config['RWKV']['layers'])
-    #exit()
-    
-    
+
     # 设置设备和数据类型
     dtype = torch.bfloat16
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # 加载模型和分词器
     transformer_model = AutoModelForCausalLM.from_pretrained(config['Llama']['model_id'],
-                                                            torch_dtype=dtype, device_map='cpu',low_cpu_mem_usage=True)
+                                                             torch_dtype=dtype, device_map='cpu',low_cpu_mem_usage=True,attn_implementation="sdpa")
+    
+
+    # if args.local_rank == 0:
+    #     transformer_model = AutoModelForCausalLM.from_pretrained(
+    #         config['Llama']['model_id'],
+    #         torch_dtype=dtype, 
+    #         device_map='cpu',
+    #         low_cpu_mem_usage=True
+    #     )
+    # else:
+    #     # 他のrankではメタデータのみロード
+    #     from transformers import AutoConfig
+    #     config_model = AutoConfig.from_pretrained(config['Llama']['model_id'])
+    #     transformer_model = AutoModelForCausalLM.from_config(
+    #         config_model,
+    #         torch_dtype=dtype
+    #     )
     tokenizer = AutoTokenizer.from_pretrained(config['Llama']['model_id'])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
     # 设置参数
     args.my_pos_emb = 0
-    
-    #args.head_size_divisor = 8
+    args.head_size_divisor = 8
     args.ctx_len = 4096
     args.n_layer = transformer_model.config.num_hidden_layers
     args.n_embd = transformer_model.config.hidden_size
+    args.config = transformer_model.config
     
     args.dim_ffn = transformer_model.config.intermediate_size
-    args.config = transformer_model.config
     args.num_attention_heads = transformer_model.config.num_attention_heads
     args.num_key_value_heads = transformer_model.config.num_key_value_heads
     args.num_key_value_heads = transformer_model.config.num_key_value_heads
@@ -760,8 +436,13 @@ if __name__ == '__main__':
     args.real_bsz = args.train_batch_size
     args.is_sft = config.get('is_sft', False)
     args.is_all_labels_kl = config.get('is_all_labels_kl', False)
-    print(f'{transformer_model.config.num_hidden_layers}')
-    
+
+    os.environ["RWKV_HEAD"] = str(int(args.n_embd // args.head_size_a))
+    os.environ["RWKV_HEAD_SIZE_A"] = str(int(args.head_size_a))
+    os.environ["RWKV_MIRCO_BSZ"] = str(int(args.micro_bsz))
+
+    from hybrid_model import HybridModel,VFirstHolder
+
     # 初始化混合模型
     #if args.stage == 1:
     teacher_attn_module_list = torch.nn.ModuleList()
@@ -770,59 +451,23 @@ if __name__ == '__main__':
         teacher_attn_module_list.append(llama_layer.self_attn)
     for n,p in teacher_attn_module_list.named_parameters():
         p.requires_grad = False
-
-
-    os.environ["RWKV_HEAD"] = str(int(args.n_embd // args.head_size_a))
-    os.environ["RWKV_HEAD_SIZE_A"] = str(int(args.head_size_a))
-    os.environ["RWKV_MIRCO_BSZ"] = str(int(args.micro_bsz))
-
-    from hybrid_model import HybridModel,VFirstHolder
-
     model = HybridModel(transformer_model, args, tokenizer)
     model = model.to(dtype=torch.bfloat16)
+    pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
 
-    
-
-    
-
+    #model = replace_with_bnb_linear(model, module_names=["mlp"], threshold=0)
     def SearchTensor(model,keyname):
         for name,param in model.named_parameters():
             if keyname in name:
                 return param
         return None
     
-
-    #pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
-
-    print('copy sometensor from teacher model')
-    # for name,param in model.named_parameters():
-    #     print(f'{name}')
-    #     if 'self_attn.student_attn' in name:
-    # weight_mul_r = 1.0
-    # weight_mul_k = 0.3
-    # weight_mul_v = 0.2
-    # weight_mul_o = 0.5 
-
-    # weight_mul_r = 1.0
-    # weight_mul_k = 1.0
-    # weight_mul_v = 0.3
-    # weight_mul_o = 0.5 
     weight_mul_r = 1.0
     weight_mul_k = 1.0
     weight_mul_v = 1.0
     weight_mul_o = 1.0 
     with torch.no_grad():
         for i in range(args.n_layer):
-            if i < args.n_layer - args.hybrid_attention_layers:
-                weight_mul_r = 1.0
-                weight_mul_k = 1.0
-                weight_mul_v = 0.2
-                weight_mul_o = 0.5 
-            else:
-                weight_mul_r = 1.0
-                weight_mul_k = 1.0
-                weight_mul_v = 1.0
-                weight_mul_o = 1.0 
             print(f'layer = {i} transfer to student')
             for name,param in model.named_parameters():
                 #print(name)
@@ -1076,72 +721,101 @@ if __name__ == '__main__':
                                 print('shape is not same')
                         else:
                             print('not found')
+    
+    if args.local_rank == 0:
+        print(model)
+        # 打印几个关键参数的统计信息
+        #print parameter:model.model.layers.27.self_attn.student_attn.ln_x.weight
+        for name, param in model.named_parameters():
+            if name == pname:
+                mean_of_param = param.mean().item()
+                std_of_param = param.std().item()
+                print(f"Parameter {name}: mean={mean_of_param:.6f}, std={std_of_param:.6f}")
+    # 设置模型参数的训练状态
+    if args.stage == 2 or args.stage == 3:#3 means sft
+        print('all params are trainable')
+        print(f'freeze mlp is {args.freeze_mlp}')
+
+        # チェックポイントをロード
+        checkpoint = torch.load(args.ckpt_file, map_location="cpu")
+
+        # モデル形式に応じてstate_dictを取得
+        if "model_state_dict" in checkpoint:
+            state_dict = checkpoint["model_state_dict"]
+        elif "state_dict" in checkpoint:
+            state_dict = checkpoint["state_dict"]
+        else:
+            state_dict = checkpoint
+
+        # 指定したモジュールを含まないパラメータのみをフィルタリング
+        filtered_state_dict = {}
+        for key, value in state_dict.items():
+            filtered_state_dict[key] = value.to(dtype=torch.bfloat16)
+            print(f'{key} {filtered_state_dict[key].dtype}')
+            # embed、lm_head、normを含むキーをスキップ
+            if not any(excluded in key for excluded in ["embed", "lm_head", ".norm."]):
+                 filtered_state_dict[key] = value.to(dtype=torch.bfloat16)
+                 print(f'{key} {filtered_state_dict[key].dtype}')
+            else:
+                 print(f'{key} {value.dtype}')
+            
+
+        # フィルタリングしたパラメータをロード（strict=Falseで欠けているパラメータを許容）
+        model.load_state_dict(filtered_state_dict, strict=False)
+
+        # 除外したパラメータ数と残ったパラメータ数を出力
+        print(f"除外したパラメータ: {len(state_dict) - len(filtered_state_dict)}")
+        print(f"ロードしたパラメータ: {len(filtered_state_dict)}")
+
+        if args.grad_cp == 1:
+            print('enable gradient checkpointing')
+            model.model.gradient_checkpointing_enable()
 
 
+        
+        for name, param in model.named_parameters():
+            Attention = 0
+            for i in range(args.n_layer):
+                t = f'layers.{i}.'
+                if t in name and i < args.n_layer - args.hybrid_attention_layers:
+                    Attention = 0
+                    break
+                elif t in name:
+                    Attention = 1
+                    break
+            if Attention == 0 and args.freeze_attention and ('receptance' in name or 'key' in name or 'value' in name):
+                param.requires_grad = False
+                print(f'{name} Frozen')
+            elif Attention==1 and args.freeze_hybrid_attention and ('self_attn.student_attn' in name and ('q_proj' in name or 'k_proj' in name or 'v_proj' in name or 'o_proj' in name or 'q_norm' in name or 'k_norm' in name)):
+                param.requires_grad = False
+                print(f'{name} Frozen')
+            elif args.freeze_mlp and 'mlp' in name:
+                param.requires_grad = False
+                print(f'{name} Frozen')
+            else:
+                param.requires_grad = True
+        for name, param in model.named_parameters():
+            if 'lm_head' in name or '.norm.' in name:
+                param.requires_grad = False
+                print(f'frozen {name}')
 
-
-    if args.ckpt_file is not None:
-        model.load_check_point(args.ckpt_file)  
-
-
-
-
-    #if args.use_bitsandbytes:
-        # print('bnb')
-        # #exit()
-        # freeze_as_int8_buffer(model, freeze_names=["mlp","head"])
-        # freeze_as_int8_buffer(teacher_attn_module_list, freeze_names=["proj"])
-
-        #inspect_model_parameters(model)
         #exit()
+
+        #model.dummy_param = torch.nn.Parameter(torch.zeros(1, requires_grad=True))
+
         
 
-    #exit()
+        #exit()
+    else:
+        if args.ckpt_file is not None:
+            model.load_check_point(args.ckpt_file)  
+        print(f'Only self_attn params are trainable')
+        for name,param in model.named_parameters():
 
-
-
-
-    # if args.local_rank == 0:
-    #     #print(model)
-    #     for name, param in model.named_parameters():
-    #         if name == pname:
-    #             mean_of_param = param.mean().item()
-    #             std_of_param = param.std().item()
-    #             print(f"Parameter {name}: mean={mean_of_param:.6f}, std={std_of_param:.6f}")
-
-
-    # 设置模型参数的训练状态
-
-    print(f'Stage1 Only self_attn params are trainable')
-    for name,param in model.named_parameters():
-        Attention = 0
-        for i in range(args.n_layer):
-            t = f'layers.{i}.'
-            if t in name and i < args.n_layer - args.hybrid_attention_layers:
-                Attention = 0
-                break
-            elif t in name:
-                Attention = 1
-                break
-
-
-
-
-        print(f'{name} {param.dtype}')
-        if Attention==0 and args.freeze_attention and ('self_attn.student_attn' in name and ('receptance' in name or 'key' in name or 'value' in name)):
-            param.requires_grad = False
-            print(f'{name} Frozen')
-        elif Attention==1 and args.freeze_hybrid_attention and ('self_attn.student_attn' in name and ('q_proj' in name or 'k_proj' in name or 'v_proj' in name or 'o_proj' in name or 'q_norm' in name or 'k_norm' in name)):
-            param.requires_grad = False
-            print(f'{name} Frozen')
-        #
-        elif 'self_attn.student_attn' in name:
-            print(f'{name} will train!')
-            param.requires_grad = True
-        else:
-            param.requires_grad = False
-            print(f'{name} Frozen')
-   # exit()
+            if 'self_attn.student_attn' in name:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
 
     # 准备数据加载器
     if args.preprocessed_data is not None:
@@ -1171,7 +845,7 @@ if __name__ == '__main__':
             train_ds, 
             batch_size=args.micro_bsz, 
             sampler=train_sampler,  # 使用分布式 sampler
-            num_workers=4, 
+            num_workers=1, 
             pin_memory=True, 
             drop_last=True, 
             collate_fn=data_collator
@@ -1212,8 +886,6 @@ if __name__ == '__main__':
         # if args.local_rank == 0:
         #     print(f'load preprocessed data from {args.raw_data} done') 
 
-    
-
     # 设置DeepSpeed配置
     if args.deepspeed:
         if args.deepspeed_config:
@@ -1223,110 +895,91 @@ if __name__ == '__main__':
         else:
             # 否则，根据命令行参数创建配置
             ds_config = {
-                "zero_force_ds_cpu_optimizer": True,
                 "distributed_backend": "rccl",
                 "train_batch_size": args.train_batch_size,
                 "bf16": {
                     "enabled": True
                 },
-              
-                
                 "fp32_reduce_scatter": True,
                 "zero_optimization": {
+                   # "ignore_frozen_weights": True,
                     "stage": args.deepspeed_stage,
                     "stage3_max_live_parameters": 1e8,
                     "stage3_max_reuse_distance": 1e8,
+                    "stage3_prefetch_bucket_size": 1e6,
                     "stage3_param_persistence_threshold": 1e4,
                     "memory_efficient_linear": True,
-                    "stage3_gather_16bit_weights_on_model_save": False,
-                    #"zero_quantized_weights": True,
+                    "stage3_gather_16bit_weights_on_model_save": True,
+                    "zero_quantized_weights": False,
                     "zero_hpz_partition_size": args.world_size,
                     "zero_quantized_gradients": True,
                     "offload_optimizer": {
                         "device": "cpu",
                         "pin_memory": False,
-                        "buffer_count": 4,
-                        'ratio':1.0
+                        "buffer_count": 3,
+                        'ratio':1
                     },
                     # "offload_param": {
                     #     "device": "cpu",
                     #     "pin_memory": False,
                     #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     "max_in_cpu" : 1e5
+                    #     "buffer_size": 1e7,
+                        
                     # },
-                    
                     "allgather_partitions": True,
                     "sub_group_size": 1e7,
-                    "overlap_comm": True,
+                    "overlap_comm": False,
                     "reduce_scatter": True,
-                    #"reduce_bucket_size": 5e6,
-                    #"contiguous_gradients": True
+                    "reduce_bucket_size": 1e6,
+                    "contiguous_gradients": False
                 },
+                # "compile": {
+                #     "deepcompile": True,
+                # },
                 "gradient_clipping": args.gradient_clip_val,
                 "gradient_checkpointing": args.grad_cp == 1,
+                #"grad_accum_dtype": "bf16",
                 "zero_force_ds_cpu_initialization": True,
                 "zero_allow_untested_optimizer": True,
                 "gradient_accumulation_steps": args.accumulate_grad_batches if args.accumulate_grad_batches > 1 else None,
                 "wall_clock_breakdown": False,
-                "dump_state": True,
-                # "activation_checkpointing": {
-                #     "partition_activations": True,
-                #     "cpu_checkpointing": True,
-                #     "contiguous_memory_optimization": True,
-                #     "number_checkpoints": 1,
-                #     "synchronize_checkpoint_boundary": True,
-                #     "profile": False
-                # }
+                "dump_state": True
             }
         if not args.deepspeed_offload:
             ds_config['zero_optimization']['offload_optimizer'] = None
             ds_config['zero_optimization']['offload_param'] = None
         # 手动配置优化器
         print(f'configuring optimizer with args {args}')
-        optimizer = configure_optimizer(model, args)
+        optimizer = configure_optimizer_stage2(model, args)
+        #exit()
         if args.local_rank == 0:
             print(f'optimizer is {optimizer}')
             num_total_params = sum(p.numel() for p in model.parameters())
             num_trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-            for n, p in model.named_parameters():
-                if p.requires_grad:
-                    print(f'param {n} is trainable {p.dtype}')
-                else:
-                    print(f'param {n} is frozen {p.dtype}')
+            # for n, p in model.named_parameters():
+            #     if p.requires_grad:
+            #         print(f'param {n} is trainable')
             print(f'num_total_params: {num_total_params}, num_trainable_params: {num_trainable_params}, percent: {num_trainable_params / num_total_params * 100:.2f}%')
             #print current gpu memory
             print(f'current gpu memory BEFORE initializing deepspeed: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
             # model.model = torch.compile(model.model,fullgraph=True)
             # 初始化 DeepSpeed
             print(f'initializing deepspeed with config {ds_config}')
-        # exclude_int8_params_from_zero(model)
-        trainable_params = (p for p in model.parameters() if p.requires_grad)
         model_engine, optimizer, _, _ = deepspeed.initialize(
             model=model,  
-            model_parameters=trainable_params,
             optimizer=optimizer,
             config=ds_config
         )
-
-        del model
-        torch.cuda.empty_cache()
-
-
-        #verify_quantization(model_engine)
-
-        #exit()
-
         
-        # # 添加验证代码
-        # for name, param in model_engine.module.named_parameters():
-        #     if name == pname:
-        #         with deepspeed.zero.GatheredParameters(param):
-        #             if args.local_rank == 0:  # 只在 rank 0 打印
-        #                 print(f"Parameter {name}:")
-        #                 print(f"  - mean: {param.mean().item():.6f} versus {mean_of_param:.6f}")
-        #                 print(f"  - std: {param.std().item():.6f} versus {std_of_param:.6f}")
-        #             break
+        # 添加验证代码
+        for name, param in model_engine.module.named_parameters():
+            if name == pname:
+                with deepspeed.zero.GatheredParameters(param):
+                    if args.local_rank == 0:  # 只在 rank 0 打印
+                        print(f"Parameter {name}:")
+                        print(f"  - mean: {param.mean().item():.6f} versus {mean_of_param:.6f}")
+                        print(f"  - std: {param.std().item():.6f} versus {std_of_param:.6f}")
+                    break
             
             
         #we only init  teacher related stuff when is_sft is False
@@ -1335,7 +988,6 @@ if __name__ == '__main__':
         vfirst_holder.requires_grad_(False)
         if args.deepspeed_stage == 3:
             ds_config_state = {
-                "zero_force_ds_cpu_optimizer": False,
                 "train_batch_size": args.train_batch_size,
                 "bf16": {"enabled": True},
                 "zero_optimization": {
@@ -1347,26 +999,20 @@ if __name__ == '__main__':
                     
                     # 最小化内存使用
                     "memory_efficient_linear": True,
-                    "contiguous_gradients": False,
+                    "contiguous_gradients": True,
                     
                     # # 如果需要 CPU offload，使用最小配置
-                    # "offload_param": {
-                    #     "device": "cpu",
-                    #     "pin_memory": False,
-                    #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     "max_in_cpu" : 1e7
-                    # },
-                    # "offload_optimizer": {
-                    #     "device": "cpu",
-                    #     "pin_memory": True,
-                    #     "buffer_count": 4
-                    # },
+                    "offload_param": {
+                        "device": "cpu",
+                        "pin_memory": True,
+                        "buffer_count": 2,  # 减少缓冲区数量
+                        "buffer_size": 1e6,  # 更小的缓冲区大小
+                    },
                     
                     # 简化通信设置
                     "allgather_partitions": True,
                     "reduce_scatter": True,
-                    "overlap_comm": False,
+                    "overlap_comm": True,
                 },
                 # 禁用不必要的功能
                 "wall_clock_breakdown": False,
@@ -1394,21 +1040,21 @@ if __name__ == '__main__':
                 attn_wrapper.v_first_state = state_engine.module
                 attn_wrapper.global_rank = model_engine.global_rank
             del vfirst_holder
-
+        else:
+            #Zero 2 will hold the model in one GPU process
+            print(f'Zero 2 will hold the model in one GPU process,set the vfirst_holder to model_engine')
+            for layer_idx in args.layers:
+                attn_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
+                attn_wrapper.v_first_state = vfirst_holder
         timer.initialize_with_engine(model_engine)
         #print current gpu memory
         if args.local_rank == 0:
             print(f'current gpu memory AFTER initializing deepspeed: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
-        if args.stage == 1:
-            #in stage 1, we don't need teacher model and 
-            #we only align the original self attn output with TimeMixer output
-            #Init the teacher module list engine with deepspeed
-            teacher_engine = None
+        if args.stage == 2 and args.is_sft == False:
             if args.local_rank == 0:
                 print(f'initializing teacher model')
-                print(f'current gpu memory BEFORE initializing teacher attn list: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
+                print(f'current gpu memory BEFORE initializing teacher model: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
             ds_config = {
-                "zero_force_ds_cpu_optimizer": False,
                 "distributed_backend": "rccl",
                 "train_batch_size": args.train_batch_size,
                 "bf16": {
@@ -1416,68 +1062,104 @@ if __name__ == '__main__':
                 },
                 # 'weight_quantization': {
                 #     'quantized_initialization': {
-                #         'num_bits': 4,
-                #         'group_size': 256,
+                #         'num_bits': 8,
+                #         'group_size': 64,
                 #         'group_dim': 1,
                 #         'symmetric': False
                 #     },
                 # },
                 "zero_optimization": {
                     "stage": args.deepspeed_stage,
-                    "stage3_max_live_parameters": 1e9,
-                    "stage3_max_reuse_distance": 1e9,
-                    "stage3_prefetch_bucket_size": 5e6,
+                    "stage3_max_live_parameters": 1e6,
+                    "stage3_max_reuse_distance": 1e6,
+                    "stage3_prefetch_bucket_size": 2e6,
                     "memory_efficient_linear": True,
-                    "stage3_param_persistence_threshold": 1e4,
-
-                    #"zero_quantized_weights": True,
-                    "zero_hpz_partition_size": args.world_size,
-                    "zero_quantized_gradients": True,
+                    "stage3_param_persistence_threshold": 1e5,
                     # "offload_param": {
                     #     "device": "cpu",
-                    #     "pin_memory": False,
-                    #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     #"max_in_cpu" : 1e8
-                    # },
-                    # "offload_optimizer": {
-                    #     "device": "cpu",
                     #     "pin_memory": True,
-                    #     "buffer_count": 4
+                    #     "buffer_count": 4,
+                    #     "buffer_size": 1e8
                     # },
                     "allgather_partitions": True,
                     "reduce_scatter": True,
                     "reduce_bucket_size": 5e6,
-                    "overlap_comm": False,
-                    "contiguous_gradients": False
+                    "overlap_comm": True,
+                    "contiguous_gradients": True
                 },
-                "zero_force_ds_cpu_initialization": True,
-                "dump_state": True
+                # "zero_force_ds_cpu_initialization": True,
+                # "dump_state": True
             }
-            teacher_attn_module_list.requires_grad_(False)
-            
-            #teacher_trainable_params = (p for p in teacher_attn_module_list.parameters() if p.requires_grad)
-            # exclude_int8_params_from_zero(teacher_attn_module_list)
-            teacher_engine, _, _, _ = deepspeed.initialize(
-                model=teacher_attn_module_list,
-                config=ds_config,
-                #model_parameters=teacher_trainable_params,
+            if not args.deepspeed_offload:
+                ds_config['zero_optimization']['offload_param'] = None
+            teacher_model_id = args.teacher_model_id
+            if teacher_model_id is None:
+                teacher_model_id = config['Llama']['model_id']
+            print(f'initializing teacher model with id {teacher_model_id}')
+
+            # quantization_config = BitsAndBytesConfig(
+            #     load_in_4bit=True,
+            #     bnb_4bit_compute_dtype=torch.float16,
+            #     bnb_4bit_quant_type="nf4",
+            #     bnb_4bit_use_double_quant=True
+            # )
+            teacher_model = AutoModelForCausalLM.from_pretrained(
+                teacher_model_id,
+                #quantization_config=quantization_config,
+                torch_dtype=dtype,
+                device_map='cpu',
+                low_cpu_mem_usage=True,
+                attn_implementation="sdpa"
             )
-            # 遍历所有层
-            for layer_idx in args.layers:
-                if args.local_rank == 0:
-                    print(f'set teacher attn for layer {layer_idx}')
-                attention_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
-                teacher_attn = teacher_engine.module[layer_idx]
-                attention_wrapper.teacher_attn = teacher_attn
-                attention_wrapper.add_module("teacher_attn", teacher_attn)
-                
-            
-            # 清理不再需要的引用
-            del teacher_attn_module_list
-            torch.cuda.empty_cache()
+
+            teacher_model.eval()
             if args.local_rank == 0:
-                print(f'current gpu memory AFTER initializing teacher attn list: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
+                print('freeze teacher_model')
+                print(f'teacher_model is {teacher_model}')
+            for name, param in teacher_model.named_parameters():
+                param.requires_grad = False
+            #使用DeepSpeed包装teacher model
+            teacher_engine, _, _, _ = deepspeed.initialize(
+                model=teacher_model,
+                config=ds_config
+            )
+            # from deepspeed.inference.config import QuantizationConfig
+            # quant_config = QuantizationConfig(
+            #     enabled=True,
+            #     weight={
+            #         "enabled": True,
+            #         "num_bits": 8,
+            #         "q_type": "symmetric",
+            #         "q_groups": 64,  # 通常は64 or 128
+            #         "quantized_initialization": {},  # 通常は空でOK
+            #         "post_init_quant": {}
+            #     },
+            #     activation={
+            #         "enabled": False  # 推論にactivation quant不要ならFalseで軽量化
+            #     },
+            #     qkv={
+            #         "enabled": True
+            #     }
+            # )
+
+
+            # teacher_engine = deepspeed.init_inference(
+            #     model=teacher_model,
+            #     mp_size=1,
+            #     dtype=torch.bfloat16,
+            #     replace_with_kernel_inject=True,
+            #     quant=quant_config
+            # )
+            if args.local_rank == 0:
+                print(f'current gpu memory AFTER initializing teacher model: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
+                # 将处理好的teacher model设置到model_engine中
+                # model_engine.module.set_teacher_model(teacher_engine.module)
+                print(f'current gpu memory AFTER setting teacher model: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
+            # 清理不需要的引用
+            del teacher_model
+            #teacher_engine=teacher_model
+            torch.cuda.empty_cache()
+
         else:
             #Other stage we don't need teacher model
             #SFT or DPO
@@ -1486,8 +1168,8 @@ if __name__ == '__main__':
         # 如果不使用 DeepSpeed，使用普通的优化器
         print('not using deepspeed, EXIT')
         exit()
-    # 初始化rccl组
-    # model.client = initialize_rccl_client(args)
+    # 初始化NCCL组
+    # model.client = initialize_nccl_client(args)
 
     # 只在主进程上初始化wandb
     if args.wandb and model_engine.global_rank == 0:
@@ -1504,42 +1186,21 @@ if __name__ == '__main__':
     # 创建管理器实例
     terminate = False
     teacher_attn_manager = TeacherAttnManager(model_engine, args.layers)
-
-    # lisa_freezer = RandomLayerFreezingLISA(
-    #     model_engine=model_engine,
-    #     num_hidden_layers=transformer_model.config.num_hidden_layers,
-    #     freeze_ratio=0.7,
-    #     target_pattern="self_attn.student_attn",
-    #     update_freq=4,
-    # )
-
-    FirstTime = True
-
-    #lisa_freezer.step()
-
     for epoch in range(args.max_epochs):
         model_engine.train()
         if model_engine.global_rank == 0:
             pbar = tqdm(total=args.epoch_steps, desc=f"Epoch {epoch}")
 
         for batch_idx, batch in enumerate(train_dataloader):
-
-            # if FirstTime:
-            #     FirstTime = False
-                
-            ##print('onbatch start')
+            
             lr, wd_now = on_train_batch_start(args, model_engine, global_step, epoch)
 
             batch = {k: v.to(model_engine.device) for k, v in batch.items()}
-            ##print('trainstep')
-            ##print(batch)
-            #print(len(batch))
             
             # 前向传播
             loss, teacher_loss, kl_loss, student_cross_entropy_loss = train_step(model_engine, batch, args, teacher_engine, tokenizer)
             
             #CAUTION: The v_first will NEVER be synchronized for first batch. Just treat it as an outlier.
-            #print('backward')
 
             model_engine.backward(loss)
 
@@ -1547,11 +1208,8 @@ if __name__ == '__main__':
 
             if is_accumulation_step:
                global_step += 1
-               #lisa_freezer.step()
-            #print('model engine step')
             model_engine.step()
-            
-            #print('on train batch end')
+
             # 每一步都调用 on_train_batch_end，但只在累积步骤结束时更新进度条
             last_log_time, pbar = on_train_batch_end(
                 args, batch_idx, model_engine,teacher_engine, loss.item(), teacher_loss, kl_loss, student_cross_entropy_loss,
@@ -1576,6 +1234,24 @@ if __name__ == '__main__':
                         model_engine.save_checkpoint(args.output_dir, f"checkpoint-epoch{epoch}")
                     except Exception as e:
                         print(f"Error saving checkpoint: {e}")
-                        import traceback 
+                        import traceback
                         traceback.print_exc()
                 
+                # if args.local_rank == 0:
+                #     print(f'saving epoch checkpoint to {args.output_dir}')
+                # #temporarily set attention_wrapper's teacher_attn to None
+                # # 遍历所有层
+                # for layer_idx in args.layers:
+                #     # 获取当前层的 AttentionWrapper
+                #     if args.local_rank == 0:
+                #         print(f'set teacher attn to None {layer_idx}')
+                #     attention_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
+                #     # 设置 teacher_attn to None
+                #     attention_wrapper.teacher_attn = None
+                # model_engine.save_checkpoint(args.output_dir, f"checkpoint-epoch{epoch}")
+                # # 遍历所有层
+                # for layer_idx in args.layers:
+                #     # 获取当前层的 AttentionWrapper
+                #     if args.local_rank == 0:
+                #         print(f'set teacher attn for layer {layer_idx}')
+                #     attention_wrapper = model_engine.m

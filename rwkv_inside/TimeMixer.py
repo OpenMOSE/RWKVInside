@@ -14,239 +14,7 @@ is_wind_cuda = False
 #from tritonbighead import RUN_CUDA_RWKV7g
 from backstepping_longhead import RUN_CUDA_RWKV7g
 
-
-
-    
-class RWKV_Tmix_x070_Mose(torch.nn.Module):
-    def __init__(self, args, layer_id):
-        super().__init__()
-        self.args = args
-        self.layer_id = layer_id
-   
-        self.head_size = args.head_size_a
-        self.n_head = args.dim_att // self.head_size
-        assert args.dim_att % self.n_head == 0
-        H = self.n_head
-        N = self.head_size
-        C = args.n_embd
-
-
-        with torch.no_grad():
-            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
-            ddd = torch.ones(1, 1, C)
-            for i in range(C):
-                ddd[0, 0, i] = i / C
-
-          
-
-            def ortho_init(x, scale):
-                with torch.no_grad():
-                    shape = x.shape
-                    if len(shape) == 2:
-                        gain = math.sqrt(shape[0] / shape[1]) if shape[0] > shape[1] else 1
-                        nn.init.orthogonal_(x, gain=gain * scale)
-                    elif len(shape) == 3:
-                        gain = math.sqrt(shape[1] / shape[2]) if shape[1] > shape[2] else 1
-                        for i in range(shape[0]):
-                            nn.init.orthogonal_(x[i], gain=gain * scale)
-                    else:
-                        assert False
-                    return x
-
-            #D_DECAY_LORA = 64
-            D_DECAY_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_DECAY_LORA={D_DECAY_LORA}')
-            self.w1 = nn.Parameter(torch.zeros(C, D_DECAY_LORA))
-            self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, C), 0.1))
-            decay_speed = torch.ones(C)
-            for n in range(C):
-                decay_speed[n] = -7 + 5 * (n / (C - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
-            self.w0 = nn.Parameter(decay_speed.reshape(1,1,C) + 0.5) # !!! 0.5 comes from F.softplus !!!
-
-            D_AAA_LORA = 64
-            D_AAA_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_AAA_LORA={D_AAA_LORA}')
-            self.a1 = nn.Parameter(torch.zeros(C, D_AAA_LORA))
-            self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, C), 0.1))
-            self.a0 = nn.Parameter(torch.zeros(1,1,C))
-
-            D_MV_LORA = 32
-            D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_MV_LORA={D_MV_LORA}')
-            self.v1 = nn.Parameter(torch.zeros(C, D_MV_LORA))
-            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, C), 0.1))
-            self.v0 = nn.Parameter(torch.zeros(1,1,C)+1.0)
-
-
-            self.k_k = nn.Parameter(torch.ones(1,1,C)*0.85)
-            self.k_a = nn.Parameter(torch.ones(1,1,C))
-            self.r_k = nn.Parameter(torch.zeros(H,N))
-
-            self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-            self.receptance = nn.Linear(C, C, bias=False)
-            self.key = nn.Linear(C, C, bias=False)
-            self.value = nn.Linear(C, C, bias=False)
-            self.output = nn.Linear(C, C, bias=False)
-
-
-            # !!! initialize if you are using RWKV_Tmix_x070 in your code !!!
-            # self.receptance.weight.data.uniform_(-0.5/(C**0.5), 0.5/(C**0.5))
-            # self.key.weight.data.uniform_(-0.05/(C**0.5), 0.05/(C**0.5))
-            # self.value.weight.data.uniform_(-0.5/(C**0.5), 0.5/(C**0.5))
-            # self.output.weight.data.zero_()
-            
-
-    
-    #@torch.compile
-    def forward(self, x, v_first,attention_mask):
-        B, T, C = x.size()
-        #removed tokenshift
-        H = self.n_head
-        r = self.receptance(x)
-        w = -F.softplus(-(self.w0 + torch.tanh(x @ self.w1) @ self.w2)) - 0.6 # soft-clamp to (-inf, -0.5) modified -0.5->-0.6
-        k = self.key(x)
-        v = self.value(x)
-        if self.layer_id == 0:
-            v_first = v # store the v of the first layer
-        else:
-            v = v + (v_first - v) * torch.sigmoid(self.v0 + (x @ self.v1) @ self.v2) # add value residual
-        a = torch.sigmoid(self.a0 + (x @ self.a1) @ self.a2) # a is "in-context learning rate"
-
-        kk = k * self.k_k
-        kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
-        k = k * (1 + (a-1) * self.k_a)
-        x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)
-
-        x = x.view(B, T, C)
-        x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
-        x = self.output(x) 
-        return x, v_first
-
-
-
-
-
-
-
-class RWKV_Tmix_x070_Mose_v2(torch.nn.Module):
-    def __init__(self, args, layer_id):
-        super().__init__()
-        self.args = args
-        self.layer_id = layer_id
-   
-        self.head_size = args.head_size_a
-        self.n_head = args.dim_att // self.head_size
-        assert args.dim_att % self.n_head == 0
-        H = self.n_head
-        N = self.head_size
-        C = args.n_embd
-
-
-        with torch.no_grad():
-            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
-            ddd = torch.ones(1, 1, C)
-            for i in range(C):
-                ddd[0, 0, i] = i / C
-
-          
-
-            def ortho_init(x, scale):
-                with torch.no_grad():
-                    shape = x.shape
-                    if len(shape) == 2:
-                        gain = math.sqrt(shape[0] / shape[1]) if shape[0] > shape[1] else 1
-                        nn.init.orthogonal_(x, gain=gain * scale)
-                    elif len(shape) == 3:
-                        gain = math.sqrt(shape[1] / shape[2]) if shape[1] > shape[2] else 1
-                        for i in range(shape[0]):
-                            nn.init.orthogonal_(x[i], gain=gain * scale)
-                    else:
-                        assert False
-                    return x
-
-            #D_DECAY_LORA = 64
-            D_DECAY_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_DECAY_LORA={D_DECAY_LORA}')
-            self.w1 = nn.Parameter(torch.zeros(C, D_DECAY_LORA))
-            self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, C), 0.1))
-            decay_speed = torch.ones(C)
-            for n in range(C):
-                decay_speed[n] = -7 + 5 * (n / (C - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
-            self.w0 = nn.Parameter(decay_speed.reshape(1,1,C) + 0.5) # !!! 0.5 comes from F.softplus !!!
-
-            D_AAA_LORA = 64
-            D_AAA_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_AAA_LORA={D_AAA_LORA}')
-            self.a1 = nn.Parameter(torch.zeros(C, D_AAA_LORA))
-            self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, C), 0.1))
-            self.a0 = nn.Parameter(torch.zeros(1,1,C))
-
-            D_MV_LORA = 32
-            D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_MV_LORA={D_MV_LORA}')
-            self.v1 = nn.Parameter(torch.zeros(C, D_MV_LORA))
-            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, C), 0.1))
-            self.v0 = nn.Parameter(torch.zeros(1,1,C)+1.0)
-
-
-            self.k_k = nn.Parameter(torch.ones(1,1,C)*0.85)
-            self.k_a = nn.Parameter(torch.ones(1,1,C))
-            self.r_k = nn.Parameter(torch.zeros(H,N))
-
-            self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-            self.receptance = nn.Linear(C, C, bias=False)
-            self.key = nn.Linear(C, C, bias=False)
-            self.value = nn.Linear(C, C, bias=False)
-            self.output = nn.Linear(C, C, bias=False)
-            
-            self.ln_x = nn.GroupNorm(H, C, eps=64e-5) # !!! notice eps value !!!
-            self.out_scale = nn.Parameter(torch.tensor(-11.5129))
-
-
-            # !!! initialize if you are using RWKV_Tmix_x070 in your code !!!
-            # self.receptance.weight.data.uniform_(-0.5/(C**0.5), 0.5/(C**0.5))
-            # self.key.weight.data.uniform_(-0.05/(C**0.5), 0.05/(C**0.5))
-            # self.value.weight.data.uniform_(-0.5/(C**0.5), 0.5/(C**0.5))
-            # self.output.weight.data.zero_()
-            
-
-    
-    #@torch.compile
-    def forward(self, x, v_first,attention_mask):
-        B, T, C = x.size()
-        #removed tokenshift
-        H = self.n_head
-        r = self.receptance(x)
-        w = -F.softplus(-(self.w0 + torch.tanh(x @ self.w1) @ self.w2)) - 0.6 # soft-clamp to (-inf, -0.5) modified -0.5->-0.6
-        k = self.key(x)
-        v = self.value(x)
-        if self.layer_id == 0:
-            v_first = v # store the v of the first layer
-        else:
-            v = v + (v_first - v) * torch.sigmoid(self.v0 + (x @ self.v1) @ self.v2) # add value residual
-        a = torch.sigmoid(self.a0 + (x @ self.a1) @ self.a2) # a is "in-context learning rate"
-
-        kk = k * self.k_k
-        kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
-        k = k * (1 + (a-1) * self.k_a)
-        x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)
-        x = self.ln_x(x.view(B * T, C)).view(B, T, C) # Groupnorm is back!
-
-        #x = x.view(B, T, C)
-        x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
-        x = self.output(x) * (torch.sigmoid(self.out_scale)*1e5) #hopefully absorb MLP scale
-        return x, v_first
-    
-
-
-
-
-
-
-
-
+from loralinear import LoraLinear
 
 
 def repeat_kv_original(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
@@ -293,654 +61,17 @@ def check_abs_max(t, name, threshold=1e4):
     if max_abs > threshold:
         print(f"⚠️ WARNING: {name} has large value (>{threshold}) → may cause NaN soon!")
 
-class SafeGroupNorm(nn.Module):
-    def __init__(self, num_groups, num_channels, eps=1e-4):
-        super().__init__()
-        self.norm = nn.GroupNorm(num_groups, num_channels, eps=eps)
-
-    def forward(self, x):
-        x = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
-        x = x.clamp(min=-1e4, max=1e4)
-        out = self.norm(x)
-        out = torch.nan_to_num(out, nan=0.0, posinf=1e4, neginf=-1e4)
-        return out
-class RWKV_Tmix_x070_Mose_cxa073(torch.nn.Module):
-    def __init__(self, args, layer_id):
-        super().__init__()
-        self.args = args
-        self.layer_id = layer_id
-   
-        self.head_size = args.head_size_a
-        self.n_head = args.dim_att // self.head_size
-
-
-        self.num_attention_heads = args.num_attention_heads
-        self.num_key_value_heads = args.num_key_value_heads
-        self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
-
-
-
-        assert args.dim_att % self.n_head == 0
-        H = self.n_head
-        N = self.head_size
-        C = args.n_embd
-
-
-        with torch.no_grad():
-            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
-            ddd = torch.ones(1, 1, C)
-            for i in range(C):
-                ddd[0, 0, i] = i / C
-
-            self.layer_architecture = nn.Parameter(torch.tensor(73.0))
-
-        
-            def ortho_init(x, scale):
-                with torch.no_grad():
-                    shape = x.shape
-                    if len(shape) == 2:
-                        gain = math.sqrt(shape[0] / shape[1]) if shape[0] > shape[1] else 1
-                        nn.init.orthogonal_(x, gain=gain * scale)
-                    elif len(shape) == 3:
-                        gain = math.sqrt(shape[1] / shape[2]) if shape[1] > shape[2] else 1
-                        for i in range(shape[0]):
-                            nn.init.orthogonal_(x[i], gain=gain * scale)
-                    else:
-                        assert False
-                    return x
-
-            D_DECAY_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_DECAY_LORA={D_DECAY_LORA}')
-            self.w1 = nn.Parameter(torch.zeros(C, D_DECAY_LORA))
-            self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, C), 0.1))
-            decay_speed = torch.ones(C)
-            for n in range(C):
-                decay_speed[n] = -7 + 5 * (n / (C - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
-            self.w0 = nn.Parameter(decay_speed.reshape(1,1,C) + 0.5) # !!! 0.5 comes from F.softplus !!!
-
-            D_AAA_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_AAA_LORA={D_AAA_LORA}')
-            self.a1 = nn.Parameter(torch.zeros(C, D_AAA_LORA))
-            self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, C), 0.1))
-            self.a0 = nn.Parameter(torch.zeros(1,1,C))
-
-            D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_MV_LORA={D_MV_LORA}')
-            self.v1 = nn.Parameter(torch.zeros(C, D_MV_LORA))
-            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, C), 0.1))
-            self.v0 = nn.Parameter(torch.zeros(1,1,C)+1.0)
-
-            self.k_k = nn.Parameter(torch.ones(1,1,C)*0.85)
-            self.k_a = nn.Parameter(torch.ones(1,1,C))
-            self.r_k = nn.Parameter(torch.zeros(H,N))
-
-            self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-
-
-            #Change to GQA Style
-            self.receptance = nn.Linear(C, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.key = nn.Linear(C, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.value = nn.Linear(C, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.output = nn.Linear(self.num_attention_heads * self.head_size, C, bias=self.args.is_attention_output_bias)
-            #SafeGroupNorm
-            self.ln_x = nn.GroupNorm(H, C, eps=64e-5) # !!! notice eps value !!!
-            #self.ln_x = SafeGroupNorm(H, C, eps=64e-5) # !!! notice eps value !!!
-            #self.out_scale = nn.Parameter(torch.tensor(-11.5129))
-
-            #later copy from teacher weights
-            #maybe can copy from any GQA Models
-            self.receptance.weight.data.zero_()
-            self.key.weight.data.zero_()
-            self.value.weight.data.zero_()
-            self.output.weight.data.zero_()
-           
-
-    
-    #@torch.compile
-    def forward(self, x, v_first,attention_mask):
-        B, T, C = x.size()
-        #removed tokenshift
-        H = self.n_head
-        r = self.receptance(x)
-        w = -F.softplus(-(self.w0 + torch.tanh(x @ self.w1) @ self.w2)) -0.6#- 0.6 # soft-clamp to (-inf, -0.5) modified -0.5->-0.6
-        k = self.key(x)
-        v = self.value(x)
-
-
-        k = k.view(B, T, self.num_key_value_heads, self.head_size)
-        v = v.view(B, T, self.num_key_value_heads, self.head_size)
-
-        # repeat k/v heads if n_kv_heads < n_heads
-        #modified repeat_kv B,T,H_kv,D) -> B,T,H,D -> B,T,C
-        k = repeat_kv(k, self.num_key_value_groups)#reshape(B,T,-1) #(B,T,C)
-        v = repeat_kv(v, self.num_key_value_groups)#reshape(B,T,-1) #(B,T,C)
-
-        k = k.view(B, T, -1)
-        v = v.view(B, T, -1)
-
-        #so now all B,T,C tensors
-
-        if self.layer_id == 0:
-            v_first = v # store the v of the first layer
-        else:
-            v = v + (v_first - v) * torch.sigmoid(self.v0 + (x @ self.v1) @ self.v2) # add value residual
-
-
-
-        a = torch.sigmoid(self.a0 + (x @ self.a1) @ self.a2) # a is "in-context learning rate"
-
-        kk = k * self.k_k
-        kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
-        k = k * (1 + (a-1) * self.k_a)
-
-        # check_abs_max(r, "r")
-        # check_abs_max(w, "w")
-        # check_abs_max(k, "k")
-        # check_abs_max(v, "v")
-        # check_abs_max(-kk, "-kk")
-        # check_abs_max(kk * a, "kk*a")
-
-
-
-
-        x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)# * 2
-
-
-
-        #print(f'layerid = {self.layer_id} Afterwkv x = {is_nan(x,"x")}')
-        x = self.ln_x(x.view(B * T, C)).view(B, T, C) # Groupnorm is back!
-        #x = x.view(B,T,-1)
-
-        #print(f'layerid = {self.layer_id} Afterln x = {is_nan(x,"x")}')
-
-        x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
-
-        #print(f'layerid = {self.layer_id} Afterwkv sum = {is_nan(x,"x")}')
-        x = self.output(x)# * (torch.sigmoid(self.out_scale)*1e5) #hopefully absorb MLP scale initial=1.0
-
-        #print(f'layerid = {self.layer_id} r = {is_nan(r,"r")} w = {is_nan(w,"w")} k = {is_nan(k,"k")} v = {is_nan(v,"v")} kk = {is_nan(kk,"kk")} x = {is_nan(x,"x")}')
-        return x, v_first
-    
-
-
-
-
-
-
-class RWKV_Tmix_x070_Mose_cxa074(torch.nn.Module):
-    def __init__(self, args, layer_id):
-        super().__init__()
-        self.args = args
-        self.layer_id = layer_id
-   
-        self.head_size = args.head_size_a
-        self.n_head = args.dim_att // self.head_size
-
-
-        self.num_attention_heads = args.num_attention_heads
-        self.num_key_value_heads = args.num_key_value_heads
-        self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
-
-
-
-        assert args.dim_att % self.n_head == 0
-        H = self.n_head
-        N = self.head_size
-        C = args.n_embd
-
-
-        with torch.no_grad():
-            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
-            ddd = torch.ones(1, 1, C)
-            for i in range(C):
-                ddd[0, 0, i] = i / C
-
-            self.layer_architecture = nn.Parameter(torch.tensor(73.0))
-
-        
-            def ortho_init(x, scale):
-                with torch.no_grad():
-                    shape = x.shape
-                    if len(shape) == 2:
-                        gain = math.sqrt(shape[0] / shape[1]) if shape[0] > shape[1] else 1
-                        nn.init.orthogonal_(x, gain=gain * scale)
-                    elif len(shape) == 3:
-                        gain = math.sqrt(shape[1] / shape[2]) if shape[1] > shape[2] else 1
-                        for i in range(shape[0]):
-                            nn.init.orthogonal_(x[i], gain=gain * scale)
-                    else:
-                        assert False
-                    return x
-
-            D_DECAY_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_DECAY_LORA={D_DECAY_LORA}')
-            self.w1 = nn.Parameter(torch.zeros(C, D_DECAY_LORA))
-            self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, C), 0.1))
-            decay_speed = torch.ones(C)
-            for n in range(C):
-                decay_speed[n] = -7 + 5 * (n / (C - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
-            self.w0 = nn.Parameter(decay_speed.reshape(1,1,C) + 0.5) # !!! 0.5 comes from F.softplus !!!
-
-            D_AAA_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_AAA_LORA={D_AAA_LORA}')
-            self.a1 = nn.Parameter(torch.zeros(C, D_AAA_LORA))
-            self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, C), 0.1))
-            self.a0 = nn.Parameter(torch.zeros(1,1,C))
-
-            D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_MV_LORA={D_MV_LORA}')
-            self.v1 = nn.Parameter(torch.zeros(C, D_MV_LORA))
-            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, C), 0.1))
-            self.v0 = nn.Parameter(torch.zeros(1,1,C)+1.0)
-
-            self.k_k = nn.Parameter(torch.ones(1,1,C)*0.85)
-            self.k_a = nn.Parameter(torch.ones(1,1,C))
-            self.r_k = nn.Parameter(torch.zeros(H,N))
-
-            self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-
-
-            #Change to GQA Style
-            self.receptance = nn.Linear(C, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.key = nn.Linear(C, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.value = nn.Linear(C, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.output = nn.Linear(self.num_attention_heads * self.head_size, C, bias=self.args.is_attention_output_bias)
-            #SafeGroupNorm
-            self.ln_x = nn.GroupNorm(H, C, eps=64e-5) # !!! notice eps value !!!
-            #self.ln_x = SafeGroupNorm(H, C, eps=64e-5) # !!! notice eps value !!!
-            #self.out_scale = nn.Parameter(torch.tensor(-11.5129))
-
-            #later copy from teacher weights
-            #maybe can copy from any GQA Models
-            self.receptance.weight.data.zero_()
-            self.key.weight.data.zero_()
-            self.value.weight.data.zero_()
-            self.output.weight.data.zero_()
-           
-
-    
-    #@torch.compile
-    def forward(self, x, v_first,attention_mask):
-        B, T, C = x.size()
-
-        
-        #removed tokenshift
-        H = self.n_head
-        r = self.receptance(x)
-        w = -F.softplus(-(self.w0 + torch.tanh((x) @ self.w1) @ self.w2)) - 0.6 # soft-clamp to (-inf, -0.5) modified -0.5->-0.6
-        k = self.key(x)
-        v = self.value(x)
-
-
-        k = k.view(B, T, self.num_key_value_heads, self.head_size)
-        v = v.view(B, T, self.num_key_value_heads, self.head_size)
-
-        # repeat k/v heads if n_kv_heads < n_heads
-        #modified repeat_kv B,T,H_kv,D) -> B,T,H,D -> B,T,C
-        k = repeat_kv(k, self.num_key_value_groups)#reshape(B,T,-1) #(B,T,C)
-        v = repeat_kv(v, self.num_key_value_groups)#reshape(B,T,-1) #(B,T,C)
-
-        k = k.view(B, T, -1)
-        v = v.view(B, T, -1)
-
-        #so now all B,T,C tensors
-
-        if self.layer_id == 0:
-            v_first = v # store the v of the first layer
-        else:
-            v = v + (v_first - v) * torch.sigmoid(self.v0 + (x @ self.v1) @ self.v2) # add value residual
-        a = torch.sigmoid(self.a0 + (x @ self.a1) @ self.a2) # a is "in-context learning rate"
-
-        kk = k * self.k_k
-        kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
-        k = k * (1 + (a-1) * self.k_a)
-
-
-        x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)
-        #print(f'layerid = {self.layer_id} Afterwkv x = {is_nan(x,"x")}')
-
-        x = self.ln_x(x.view(B * T, C)).view(B, T, C) # Groupnorm is back!
-        #x = x.view(B,T,-1)
-
-
-
-        x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
-
-        #x = x * 2.0
-
-        x = self.output(x)
-
-        return x, v_first
-
-
-class RWKV_Tmix_x070_Mose_cxa075(torch.nn.Module):
-    def __init__(self, args, layer_id):
-        super().__init__()
-        self.args = args
-        self.layer_id = layer_id
-   
-        self.head_size = args.head_size_a
-        self.n_head = args.dim_att // self.head_size
-
-
-        self.num_attention_heads = args.num_attention_heads
-        self.num_key_value_heads = args.num_key_value_heads
-        self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
-
-
-
-        assert args.dim_att % self.n_head == 0
-        H = self.n_head
-        N = self.head_size
-        C = args.n_embd
-
-
-        with torch.no_grad():
-            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
-            ddd = torch.ones(1, 1, C)
-            for i in range(C):
-                ddd[0, 0, i] = i / C
-
-            self.layer_architecture = nn.Parameter(torch.tensor(73.0))
-
-        
-            def ortho_init(x, scale):
-                with torch.no_grad():
-                    shape = x.shape
-                    if len(shape) == 2:
-                        gain = math.sqrt(shape[0] / shape[1]) if shape[0] > shape[1] else 1
-                        nn.init.orthogonal_(x, gain=gain * scale)
-                    elif len(shape) == 3:
-                        gain = math.sqrt(shape[1] / shape[2]) if shape[1] > shape[2] else 1
-                        for i in range(shape[0]):
-                            nn.init.orthogonal_(x[i], gain=gain * scale)
-                    else:
-                        assert False
-                    return x
-
-            D_DECAY_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_DECAY_LORA={D_DECAY_LORA}')
-            self.w1 = nn.Parameter(torch.zeros(C, D_DECAY_LORA))
-            self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, C), 0.1))
-            decay_speed = torch.ones(C)
-            for n in range(C):
-                decay_speed[n] = -7 + 5 * (n / (C - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
-            self.w0 = nn.Parameter(decay_speed.reshape(1,1,C) + 0.5) # !!! 0.5 comes from F.softplus !!!
-
-            D_AAA_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_AAA_LORA={D_AAA_LORA}')
-            self.a1 = nn.Parameter(torch.zeros(C, D_AAA_LORA))
-            self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, C), 0.1))
-            self.a0 = nn.Parameter(torch.zeros(1,1,C))
-
-            D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_MV_LORA={D_MV_LORA}')
-            self.v1 = nn.Parameter(torch.zeros(C, D_MV_LORA))
-            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, C), 0.1))
-            self.v0 = nn.Parameter(torch.zeros(1,1,C)+1.0)
-
-            self.k_k = nn.Parameter(torch.ones(1,1,C)*0.85)
-            self.k_a = nn.Parameter(torch.ones(1,1,C))
-            self.r_k = nn.Parameter(torch.zeros(H,N))
-
-            self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-            #D_GATE_LORA = 128
-            D_GATE_LORA = max(32, int(round(  (0.6*(C**0.8))  /32)*32)) # suggestion
-            # Note: for some data, you can reduce D_GATE_LORA or even remove this gate
-            self.g1 = nn.Parameter(torch.zeros(C, D_GATE_LORA))
-            self.g2 = nn.Parameter(torch.zeros(D_GATE_LORA, C))
-
-
-            #Change to GQA Style
-            self.receptance = nn.Linear(C, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.key = nn.Linear(C, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.value = nn.Linear(C, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.output = nn.Linear(self.num_attention_heads * self.head_size, C, bias=self.args.is_attention_output_bias)
-            #SafeGroupNorm
-            #self.ln_x = nn.GroupNorm(H, C, eps=64e-5) # !!! notice eps value !!!
-            #self.ln_x = SafeGroupNorm(H, C, eps=64e-5) # !!! notice eps value !!!
-            #self.out_scale = nn.Parameter(torch.tensor(-11.5129))
-
-            #later copy from teacher weights
-            #maybe can copy from any GQA Models
-            self.receptance.weight.data.zero_()
-            self.key.weight.data.zero_()
-            self.value.weight.data.zero_()
-            self.output.weight.data.zero_()
-           
-
-    
-    #@torch.compile
-    def forward(self, x, v_first,attention_mask):
-        B, T, C = x.size()
-        #removed tokenshift
-        H = self.n_head
-        r = self.receptance(x)
-        w = -F.softplus(-(self.w0 + torch.tanh(x @ self.w1) @ self.w2)) -0.5
-        k = self.key(x)
-        v = self.value(x)
-
-
-        k = k.view(B, T, self.num_key_value_heads, self.head_size)
-        v = v.view(B, T, self.num_key_value_heads, self.head_size)
-
-        # repeat k/v heads if n_kv_heads < n_heads
-        #modified repeat_kv B,T,H_kv,D) -> B,T,H,D -> B,T,C
-        k = repeat_kv(k, self.num_key_value_groups)#reshape(B,T,-1) #(B,T,C)
-        v = repeat_kv(v, self.num_key_value_groups)#reshape(B,T,-1) #(B,T,C)
-
-        k = k.view(B, T, -1)
-        v = v.view(B, T, -1)
-
-        #so now all B,T,C tensors
-
-        if self.layer_id == 0:
-            v_first = v # store the v of the first layer
-        else:
-            v = v + (v_first - v) * torch.sigmoid(self.v0 + (x @ self.v1) @ self.v2) # add value residual
-
-        g_delta = torch.sigmoid(x @ self.g1) @ self.g2
-        g = 1.0 + g_delta
-
-        a = torch.sigmoid(self.a0 + (x @ self.a1) @ self.a2) # a is "in-context learning rate"
-
-        kk = k * self.k_k
-        kk = F.normalize(kk.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,C)
-        k = k * (1 + (a-1) * self.k_a)
-
-        # check_abs_max(r, "r")
-        # check_abs_max(w, "w")
-        # check_abs_max(k, "k")
-        # check_abs_max(v, "v")
-        # check_abs_max(-kk, "-kk")
-        # check_abs_max(kk * a, "kk*a")
-        x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)# * 2
-
-        #x = self.ln_x(x.view(B * T, C)).view(B, T, C) # Groupnorm is back!
-        x = x.view(B,T,-1)
-
-        #print(f'layerid = {self.layer_id} Afterln x = {is_nan(x,"x")}')
-
-        x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,C)
-
-        #print(f'layerid = {self.layer_id} Afterwkv sum = {is_nan(x,"x")}')
-        x = self.output(x*g)# * (torch.sigmoid(self.out_scale)*1e5) #hopefully absorb MLP scale initial=1.0
-
-        #print(f'layerid = {self.layer_id} r = {is_nan(r,"r")} w = {is_nan(w,"w")} k = {is_nan(k,"k")} v = {is_nan(v,"v")} kk = {is_nan(kk,"kk")} x = {is_nan(x,"x")}')
-        return x, v_first
-    
-
-
-class RWKV_Tmix_x070_Mose_cxa076(torch.nn.Module):
-    def __init__(self, args, layer_id):
-        super().__init__()
-        self.args = args
-        self.layer_id = layer_id
-   
-        self.head_size = args.head_size_a
-        self.n_head = args.dim_att // self.head_size
-
-        self.max_position_embeddings = args.config.max_position_embeddings
-        self.num_attention_heads = args.num_attention_heads
-        self.num_key_value_heads = args.num_key_value_heads
-        self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
-        self.rms_norm_eps = args.rms_norm_eps
-
-        self.RKNormMode = True
-
-        print(f'layer = {layer_id} head_size {self.head_size} n_head {self.n_head}')
-
-
-
-        assert args.dim_att % self.n_head == 0
-        H = self.num_attention_heads#self.n_head
-        N = self.head_size
-
-        C = H*N#args.n_embd
-        Hidden_dim = args.n_embd
-
-
-        with torch.no_grad():
-            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
-            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
-            ddd = torch.ones(1, 1, C)
-            for i in range(C):
-                ddd[0, 0, i] = i / C
-
-            self.layer_architecture = nn.Parameter(torch.tensor(76.0))
-
-        
-            def ortho_init(x, scale):
-                with torch.no_grad():
-                    shape = x.shape
-                    if len(shape) == 2:
-                        gain = math.sqrt(shape[0] / shape[1]) if shape[0] > shape[1] else 1
-                        nn.init.orthogonal_(x, gain=gain * scale)
-                    elif len(shape) == 3:
-                        gain = math.sqrt(shape[1] / shape[2]) if shape[1] > shape[2] else 1
-                        for i in range(shape[0]):
-                            nn.init.orthogonal_(x[i], gain=gain * scale)
-                    else:
-                        assert False
-                    return x
-
-            D_DECAY_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_DECAY_LORA={D_DECAY_LORA}')
-            self.w1 = nn.Parameter(torch.zeros(Hidden_dim, D_DECAY_LORA))
-            self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, self.num_attention_heads * self.head_size), 0.1))
-            decay_speed = torch.ones(self.num_attention_heads * self.head_size)
-            for n in range(self.num_attention_heads * self.head_size):
-                decay_speed[n] = -7 + 5 * (n / ((self.num_attention_heads * self.head_size) - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
-            self.w0 = nn.Parameter(decay_speed.reshape(1,1,self.num_attention_heads * self.head_size) + 0.5) # !!! 0.5 comes from F.softplus !!!
-
-            D_AAA_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_AAA_LORA={D_AAA_LORA}')
-            self.a1 = nn.Parameter(torch.zeros(Hidden_dim, D_AAA_LORA))
-            self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, self.num_attention_heads * self.head_size), 0.1))
-            self.a0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size))
-
-            D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) # suggestion
-            print(f'D_MV_LORA={D_MV_LORA}')
-            self.v1 = nn.Parameter(torch.zeros(Hidden_dim, D_MV_LORA))
-            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, self.num_attention_heads * self.head_size), 0.1))
-            self.v0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size)+1.0)
-
-            #self.k_k = nn.Parameter(torch.ones(1,1,C)*0.85)
-            #self.k_a = nn.Parameter(torch.ones(1,1,C))
-            self.r_k = nn.Parameter(torch.zeros(H,N))
-
-            self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
-            #D_GATE_LORA = 128
-            D_GATE_LORA = max(32, int(round(  (0.6*(C**0.8))  /32)*32)) # suggestion
-            # Note: for some data, you can reduce D_GATE_LORA or even remove this gate
-            self.g1 = nn.Parameter(torch.zeros(Hidden_dim, D_GATE_LORA))
-            self.g2 = nn.Parameter(ortho_init(torch.zeros(D_GATE_LORA, C), 0.1))
-
-
-            #Change to GQA Style
-            self.receptance = nn.Linear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.key = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.value = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.output = nn.Linear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias)
-
-            if self.RKNormMode == True:
-                self.r_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
-                self.k_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
-
-
-            #later copy from teacher weights
-            #maybe can copy from any GQA Models
-            self.receptance.weight.data.zero_()
-            self.key.weight.data.zero_()
-            self.value.weight.data.zero_()
-            self.output.weight.data.zero_()
-
-
-     
-           
-
-    
-    @torch.compile
-    def forward(self, x, v_first,attention_mask,position_embeddings,position_ids):
-        B, T, C = x.size()
-        #removed tokenshift
-        H = self.num_attention_heads#self.n_head
-
-
-        if self.RKNormMode == True:
-            r = self.r_norm(self.receptance(x).view(B,T,self.num_attention_heads,-1))
-            k = self.k_norm(self.key(x).view(B,T,self.num_key_value_heads,-1))
-        else:
-            r = self.receptance(x)
-            k = self.key(x)
-
-        
-        w = -F.softplus(-(self.w0 + torch.tanh(x @ self.w1) @ self.w2)) -0.5
-        
-        v = self.value(x)
-
-
-        k = k.view(B, T, self.num_key_value_heads, self.head_size)
-        v = v.view(B, T, self.num_key_value_heads, self.head_size)
-
-        # repeat k/v heads if n_kv_heads < n_heads
-        #modified repeat_kv B,T,H_kv,D) -> B,T,H,D -> B,T,C
-        k = repeat_kv(k, self.num_key_value_groups)
-        v = repeat_kv(v, self.num_key_value_groups)
-
-        k = k.view(B, T, -1)
-        v = v.view(B, T, -1)
-
-        #so now all B,T,C tensors
-
-        if self.layer_id == 0:
-            v_first = v # store the v of the first layer
-        else:
-            v = v + (v_first - v) * torch.sigmoid(self.v0 + (x @ self.v1) @ self.v2) # add value residual
-
-        g = torch.sigmoid(x @ self.g1) @ self.g2
-
-        a = torch.sigmoid(self.a0 + (x @ self.a1) @ self.a2) # a is "in-context learning rate"
-
-        #kk = k * self.k_k removed k_k
-        kk = F.normalize(k.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,-1)
-        #k = k * (1 + (a-1) * self.k_a)
-        k = k * (1.0 - w + a)
-
-        x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)
-        x = x.view(B,T,-1)
-        #Attention Scaling
-        x = x * (self.head_size ** -0.5) 
-
-        x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,-1)
-
-        x = self.output(x*g)
-
-        #print(f'layerid = {self.layer_id} r = {is_nan(r,"r")} w = {is_nan(w,"w")} k = {is_nan(k,"k")} v = {is_nan(v,"v")} kk = {is_nan(kk,"kk")} x = {is_nan(x,"x")}')
-        return x, v_first
+# class SafeGroupNorm(nn.Module):
+#     def __init__(self, num_groups, num_channels, eps=1e-4):
+#         super().__init__()
+#         self.norm = nn.GroupNorm(num_groups, num_channels, eps=eps)
+
+#     def forward(self, x):
+#         x = torch.nan_to_num(x, nan=0.0, posinf=1e4, neginf=-1e4)
+#         x = x.clamp(min=-1e4, max=1e4)
+#         out = self.norm(x)
+#         out = torch.nan_to_num(out, nan=0.0, posinf=1e4, neginf=-1e4)
+#         return out
     
 class Qwen3RMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -1035,8 +166,6 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
 
         print(f'layer = {layer_id} head_size {self.head_size} n_head {self.n_head}')
 
-
-
         assert args.dim_att % self.n_head == 0
         H = self.num_attention_heads#self.n_head
         N = self.head_size
@@ -1052,7 +181,8 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
             for i in range(C):
                 ddd[0, 0, i] = i / C
 
-            self.layer_architecture = nn.Parameter(torch.tensor(77.0))
+            self.layer_architecture = nn.Parameter(torch.tensor(78.0))
+            self.head_size_record = nn.Parameter(torch.tensor(float(N)))
 
         
             def ortho_init(x, scale):
@@ -1069,30 +199,43 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
                         assert False
                     return x
 
+            www = torch.zeros(C)
+            zigzag = torch.zeros(C)
+            linear = torch.zeros(C)
+            for n in range(C):
+                linear[n] = n / (C-1) - 0.5
+                zigzag[n] = ((n % N) - ((N-1) / 2)) / ((N-1) / 2)
+                zigzag[n] = zigzag[n] * abs(zigzag[n])
+                www[n] = -6 + 6 * (n / (C - 1)) ** (1 + 1 * ratio_0_to_1 ** 0.3)
+
             D_DECAY_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32))# suggestion
             print(f'D_DECAY_LORA={D_DECAY_LORA}')
             self.w1 = nn.Parameter(torch.zeros(Hidden_dim, D_DECAY_LORA))
             self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, self.num_attention_heads * self.head_size), 0.1))
-            decay_speed = torch.ones(self.num_attention_heads * self.head_size)
-            for n in range(self.num_attention_heads * self.head_size):
-                decay_speed[n] = -7 + 5 * (n / ((self.num_attention_heads * self.head_size) - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
-            self.w0 = nn.Parameter(decay_speed.reshape(1,1,self.num_attention_heads * self.head_size) + 0.5) # !!! 0.5 comes from F.softplus !!!
-
+            # decay_speed = torch.ones(self.num_attention_heads * self.head_size)
+            # for n in range(self.num_attention_heads * self.head_size):
+            #     decay_speed[n] = -7 + 5 * (n / ((self.num_attention_heads * self.head_size) - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
+            # self.w0 = nn.Parameter(decay_speed.reshape(1,1,self.num_attention_heads * self.head_size) + 0.5) # !!! 0.5 comes from F.softplus !!!
+            self.w0 = nn.Parameter(www.reshape(1,1,self.num_attention_heads * self.head_size) + 0.5 + zigzag*2.5)
             D_AAA_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
             print(f'D_AAA_LORA={D_AAA_LORA}')
             self.a1 = nn.Parameter(torch.zeros(Hidden_dim, D_AAA_LORA))
             self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, self.num_attention_heads * self.head_size), 0.1))
-            self.a0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size))
+            #self.a0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size))
+
+            self.a0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size)-0.19 + zigzag*0.3 + linear*0.4)
 
             D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) # suggestion
             print(f'D_MV_LORA={D_MV_LORA}')
             self.v1 = nn.Parameter(torch.zeros(Hidden_dim, D_MV_LORA))
             self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, self.num_attention_heads * self.head_size), 0.1))
-            self.v0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size)+1.0)
+            #self.v0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size)+1.0)
+
+            self.v0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size)+0.73 - linear*0.4)
 
             #self.k_k = nn.Parameter(torch.ones(1,1,C)*0.85)
             #self.k_a = nn.Parameter(torch.ones(1,1,C))
-            self.r_k = nn.Parameter(torch.zeros(H,N))
+            self.r_k = nn.Parameter(torch.zeros(H,N)-0.04)
 
             self.time_shift = nn.ZeroPad2d((0, 0, 1, -1))
             #D_GATE_LORA = 128
@@ -1101,12 +244,19 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
             self.g1 = nn.Parameter(torch.zeros(Hidden_dim, D_GATE_LORA))
             self.g2 = nn.Parameter(ortho_init(torch.zeros(D_GATE_LORA, C), 0.1))
 
-
+            if args.freeze_attention:
+                peftmode = 'full'
+            else:
+                peftmode = args.peftmode
             #Change to GQA Style
-            self.receptance = nn.Linear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.key = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.value = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-            self.output = nn.Linear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias)
+            # self.receptance = nn.Linear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
+            # self.key = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
+            # self.value = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
+            # self.output = nn.Linear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias)
+            self.receptance = LoraLinear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+            self.key = LoraLinear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+            self.value = LoraLinear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+            self.output = LoraLinear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias,peftmode=peftmode)
 
             if self.RKNormMode == True:
                 self.r_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
@@ -1126,7 +276,7 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
 
     
     @torch.compile
-    def forward(self, x, v_first,attention_mask,position_embeddings,position_ids):
+    def forward(self, x, v_first,attention_mask,position_embeddings,position_ids,x_emb): 
         B, T, C = x.size()
         #removed tokenshift
         H = self.num_attention_heads#self.n_head
@@ -1179,6 +329,8 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
         kk = F.normalize(k.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,-1)
         k = k * (1.0 - w + a)
 
+        #print(f'R = {r.shape} {r.device} W = {w.shape} {w.device} K = {k.shape} {k.device} V = {v.shape} {v.device}')
+
         x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)
         x = x.view(B,T,-1)
         x = x * (self.head_size ** -0.5) 
@@ -1188,8 +340,227 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
         x = self.output(x*g)
 
         #print(f'layerid = {self.layer_id} r = {is_nan(r,"r")} w = {is_nan(w,"w")} k = {is_nan(k,"k")} v = {is_nan(v,"v")} kk = {is_nan(kk,"kk")} x = {is_nan(x,"x")}')
+
         return x, v_first
     
+
+
+
+
+
+
+class RWKV_Tmix_x070_Mose_cxa079(torch.nn.Module):
+    def __init__(self, args, layer_id):
+        super().__init__()
+        self.args = args
+        self.layer_id = layer_id
+        self.Attention = 0
+   
+        self.head_size = args.head_size_a
+        self.n_head = args.dim_att // self.head_size
+
+        self.max_position_embeddings = args.config.max_position_embeddings
+        self.num_attention_heads = args.num_attention_heads
+        self.num_key_value_heads = args.num_key_value_heads
+        self.num_key_value_groups = self.num_attention_heads // self.num_key_value_heads
+        self.rms_norm_eps = args.rms_norm_eps
+        self.rope_theta = args.config.rope_theta
+
+        self.RKNormMode = True
+
+        print(f'layer = {layer_id} head_size {self.head_size} n_head {self.n_head}')
+
+        assert args.dim_att % self.n_head == 0
+        H = self.num_attention_heads#self.n_head
+        N = self.head_size
+
+        C = H*N#args.n_embd
+        Hidden_dim = args.n_embd
+
+
+        with torch.no_grad():
+            ratio_0_to_1 = layer_id / (args.n_layer - 1)  # 0 to 1
+            ratio_1_to_almost0 = 1.0 - (layer_id / args.n_layer)  # 1 to ~0
+            ddd = torch.ones(1, 1, C)
+            for i in range(C):
+                ddd[0, 0, i] = i / C
+
+            self.layer_architecture = nn.Parameter(torch.tensor(78.0))
+            self.head_size_record = nn.Parameter(torch.tensor(float(N)))
+
+        
+            def ortho_init(x, scale):
+                with torch.no_grad():
+                    shape = x.shape
+                    if len(shape) == 2:
+                        gain = math.sqrt(shape[0] / shape[1]) if shape[0] > shape[1] else 1
+                        nn.init.orthogonal_(x, gain=gain * scale)
+                    elif len(shape) == 3:
+                        gain = math.sqrt(shape[1] / shape[2]) if shape[1] > shape[2] else 1
+                        for i in range(shape[0]):
+                            nn.init.orthogonal_(x[i], gain=gain * scale)
+                    else:
+                        assert False
+                    return x
+
+            www = torch.zeros(C)
+            zigzag = torch.zeros(C)
+            linear = torch.zeros(self.num_attention_heads * self.head_size)
+            linear_kv = torch.zeros(self.num_key_value_heads * self.head_size)
+            for n in range(C):
+                linear[n] = n / (C-1) - 0.5
+                zigzag[n] = ((n % N) - ((N-1) / 2)) / ((N-1) / 2)
+                zigzag[n] = zigzag[n] * abs(zigzag[n])
+                www[n] = -6 + 6 * (n / (C - 1)) ** (1 + 1 * ratio_0_to_1 ** 0.3)
+
+            D_DECAY_LORA = max(32, int(round(  (1.7*(C**0.6))  /32)*32))# suggestion
+            print(f'D_DECAY_LORA={D_DECAY_LORA}')
+            self.w1 = nn.Parameter(torch.zeros(Hidden_dim, D_DECAY_LORA))
+            self.w2 = nn.Parameter(ortho_init(torch.zeros(D_DECAY_LORA, self.num_attention_heads * self.head_size), 0.1))
+            # decay_speed = torch.ones(self.num_attention_heads * self.head_size)
+            # for n in range(self.num_attention_heads * self.head_size):
+            #     decay_speed[n] = -7 + 5 * (n / ((self.num_attention_heads * self.head_size) - 1)) ** (0.85 + 1.0 * ratio_0_to_1 ** 0.5)
+            # self.w0 = nn.Parameter(decay_speed.reshape(1,1,self.num_attention_heads * self.head_size) + 0.5) # !!! 0.5 comes from F.softplus !!!
+            self.w0 = nn.Parameter(www.reshape(1,1,self.num_attention_heads * self.head_size) + 0.5 + zigzag*2.5)
+            D_AAA_LORA = max(32, int(round(  (1.8*(C**0.5))  /32)*32)) # suggestion
+            print(f'D_AAA_LORA={D_AAA_LORA}')
+            self.a1 = nn.Parameter(torch.zeros(Hidden_dim, D_AAA_LORA))
+            self.a2 = nn.Parameter(ortho_init(torch.zeros(D_AAA_LORA, self.num_attention_heads * self.head_size), 0.1))
+            self.a0 = nn.Parameter(torch.zeros(1,1,self.num_attention_heads * self.head_size)-0.19 + zigzag*0.3 + linear*0.4)
+
+            D_MV_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) #Modified
+            print(f'D_MV_LORA={D_MV_LORA}')
+            self.v1 = nn.Parameter(torch.zeros(Hidden_dim, D_MV_LORA))
+            self.v2 = nn.Parameter(ortho_init(torch.zeros(D_MV_LORA, self.num_key_value_heads * self.head_size), 0.1))
+            self.v0 = nn.Parameter(torch.zeros(1,1,self.num_key_value_heads * self.head_size)+0.73 - linear_kv*0.4)
+
+            #new K Residual
+            D_MK_LORA = max(32, int(round(  (1.3*(C**0.5))  /32)*32)) #Modified
+            print(f'D_MK_LORA={D_MK_LORA}')
+            self.k1 = nn.Parameter(torch.zeros(Hidden_dim, D_MK_LORA))
+            self.k2 = nn.Parameter(ortho_init(torch.zeros(D_MK_LORA, self.num_key_value_heads * self.head_size), 0.1))
+            self.k0 = nn.Parameter(torch.zeros(1,1,self.num_key_value_heads * self.head_size)+0.73 - linear_kv*0.4)
+
+            self.r_k = nn.Parameter(torch.zeros(H,N)-0.04)
+
+            D_GATE_LORA = max(32, int(round(  (0.35*(C**0.8))  /32)*32)) # suggestion
+            # Note: for some data, you can reduce D_GATE_LORA or even remove this gate
+            self.g1 = nn.Parameter(torch.zeros(Hidden_dim, D_GATE_LORA))
+            self.g2 = nn.Parameter(ortho_init(torch.zeros(D_GATE_LORA, C), 0.1))
+            print(f'D_GATE_LORA={D_GATE_LORA}')
+            #exit()
+
+            if args.freeze_attention:
+                peftmode = 'full'
+            else:
+                peftmode = args.peftmode
+            #Change to GQA Style
+            # self.receptance = nn.Linear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
+            # self.key = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
+            # self.value = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
+            # self.output = nn.Linear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias)
+            self.receptance = LoraLinear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+            self.key = LoraLinear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+            self.value = LoraLinear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+            self.output = LoraLinear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias,peftmode=peftmode)
+
+            if self.RKNormMode == True:
+                self.r_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
+                self.k_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
+
+            cos, sin, inv_freq_own = compute_qwen3_rope_cache(args.max_seq_length, self.head_size, args.DeviceID, torch.float32, self.rope_theta)
+
+            self.cos=cos.to(dtype=torch.bfloat16)
+            self.sin=sin.to(dtype=torch.bfloat16)
+
+
+            #later copy from teacher weights
+            #maybe can copy from any GQA Models
+            self.receptance.weight.data.zero_()
+            self.key.weight.data.zero_()
+            self.value.weight.data.zero_()
+            self.output.weight.data.zero_()
+
+
+     
+           
+
+    
+    @torch.compile
+    def forward(self, x, v_first,k_first,attention_mask,position_embeddings,position_ids,x_emb): 
+        B, T, C = x.size()
+        #removed tokenshift
+        H = self.num_attention_heads#self.n_head
+
+
+        if self.RKNormMode == True:
+            r = self.r_norm(self.receptance(x).view(B,T,self.num_attention_heads,-1))
+            k = self.k_norm(self.key(x).view(B,T,self.num_key_value_heads,-1))
+        else:
+            r = self.receptance(x)
+            k = self.key(x)
+
+        
+        w = -F.softplus(-(self.w0 + torch.tanh(x @ self.w1) @ self.w2)) -0.5
+        
+        v = self.value(x)
+
+
+        k = k.view(B, T, self.num_key_value_heads, self.head_size)
+        v = v.view(B, T, self.num_key_value_heads, self.head_size)
+
+        #cos, sin = position_embeddings
+        #disable hf's pos calc
+        r, k = apply_rotary_pos_emb(r, k, self.cos, self.sin, unsqueeze_dim=2)
+
+        if self.layer_id == 0:
+            v_first = v # store the v of the first layer
+            k_first = k # store the k of the first layer
+        else:
+            v = v + (v_first - v) * torch.sigmoid(self.v0 + (x @ self.v1) @ self.v2).view(B,T,self.num_key_value_heads,-1) # add value residual
+            k = k + (k_first - k) * torch.sigmoid(self.k0 + (x @ self.k1) @ self.k2).view(B,T,self.num_key_value_heads,-1) # add key residual
+
+        # repeat k/v heads if n_kv_heads < n_heads
+        #modified repeat_kv B,T,H_kv,D) -> B,T,H,D -> B,T,C
+        k = repeat_kv(k, self.num_key_value_groups)
+        v = repeat_kv(v, self.num_key_value_groups)
+
+        k = k.view(B, T, -1)
+        v = v.view(B, T, -1)
+
+        #so now all B,T,C tensors
+
+        g = torch.sigmoid(x @ self.g1) @ self.g2
+        a = torch.sigmoid(self.a0 + (x @ self.a1) @ self.a2) # a is "in-context learning rate"
+
+        kk = F.normalize(k.view(B,T,H,-1), dim=-1, p=2.0).view(B,T,-1)
+        k = k * (1.0 - w + a)
+
+        x = RUN_CUDA_RWKV7g(r, w, k, v, -kk, kk*a,self.head_size,attention_mask)
+        x = x.view(B,T,-1)
+        x = x * (self.head_size ** -0.5) 
+
+        x = x + ((r.view(B,T,H,-1)*k.view(B,T,H,-1)*self.r_k).sum(dim=-1, keepdim=True) * v.view(B,T,H,-1)).view(B,T,-1)
+
+        x = self.output(x*g)
+
+        return x, v_first, k_first
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 import torch
 import torch.nn as nn
@@ -1337,10 +708,19 @@ class GQAWithRopeAttention(nn.Module):
         # self.v_proj = nn.Linear(embed_dim, kv_heads * self.head_dim)
         # self.out_proj = nn.Linear(embed_dim, embed_dim)
 
-        self.q_proj = nn.Linear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
-        self.k_proj = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-        self.v_proj = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-        self.o_proj = nn.Linear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias)
+        if args.freeze_hybrid_attention:
+                peftmode = 'full'
+        else:
+            peftmode = args.peftmode
+
+        # self.q_proj = nn.Linear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
+        # self.k_proj = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
+        # self.v_proj = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
+        # self.o_proj = nn.Linear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias)
+        self.q_proj = LoraLinear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+        self.k_proj = LoraLinear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+        self.v_proj = LoraLinear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
+        self.o_proj = LoraLinear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias,peftmode=peftmode)
 
         if self.QKNormMode == True:
             self.q_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
@@ -1398,6 +778,7 @@ class GQAWithRopeAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: Tuple[torch.Tensor, torch.Tensor],
+        x_emb:torch.Tensor,
         attention_mask: Optional[torch.Tensor] = None,
        # past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,

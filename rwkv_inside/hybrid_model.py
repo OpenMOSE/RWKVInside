@@ -4,17 +4,17 @@ from typing import Optional, Tuple
 import torch._dynamo
 
 # たとえば、再コンパイルの上限を256回に設定
-torch._dynamo.config.recompile_limit = 256
-
+#torch._dynamo.config.recompile_limit = 256
+from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 RWKV_VERSION=os.environ.get('RWKV_VERSION','v7')
 is_rwkv_7 = RWKV_VERSION == 'v7'
 if is_rwkv_7 :
-    from TimeMixer import RWKV_Tmix_x070_Mose_cxa078 as TimeMixer
-    from TimeMixer import GQAWithRopeAttention as SelfAttention
+    from TimeMixer import RWKV_Tmix_x070_Mose_cxa079 as TimeMixer
+#from PaTHAttention import PaTHAttention as SelfAttention
+from TimeMixer import GQAWithRopeAttention as SelfAttention
     #from TimeMixer import RWKV_Tmix_x070_Mose_v2 as TimeMixer
-else:
-    from TimeMixer import RWKV_Tmix_x060 as TimeMixer
+
 import torch
 from torch.nn import functional as F
 import torch.nn as nn
@@ -29,14 +29,36 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S',
 )
 
+#global
+current_embeddings = None
+def embedding_hook(module,input,output):
+    global current_embeddings
+    if isinstance(module,nn.Embedding):
+        #print(f'embedding detected = {output.shape}')
+        current_embeddings = output
+
 class VFirstHolder(nn.Module):
     
-    def __init__(self, batch_size: int, seq_length: int, hidden_size: int,world_size: int,dtype=torch.bfloat16):
+    def __init__(self, batch_size: int, seq_length: int, num_kv :int, head_size:int,dtype=torch.bfloat16,device='cpu'):
         super().__init__()
         self.shared_state = nn.Parameter(
             torch.zeros(
-                (world_size,batch_size, seq_length, hidden_size),
-                dtype=dtype
+                (batch_size, seq_length, num_kv, head_size),
+                dtype=dtype,
+                device=device
+            ),
+            requires_grad=False
+        )
+
+class KFirstHolder(nn.Module):
+    
+    def __init__(self, batch_size: int, seq_length: int, num_kv :int, head_size:int,dtype=torch.bfloat16,device='cpu'):
+        super().__init__()
+        self.shared_state = nn.Parameter(
+            torch.zeros(
+                (batch_size, seq_length, num_kv, head_size),
+                dtype=dtype,
+                device=device
             ),
             requires_grad=False
         )
@@ -58,6 +80,7 @@ class AttentionWrapper(nn.Module):
             print(f'Layer:{layer_idx} is not trained')
         self.add_module("student_attn", self.student_attn)
         self.v_first_state = None#v6 will benefit from v_first_state
+        self.k_first_state = None
         self.global_rank = None
         self.attention_mask = None
 
@@ -294,12 +317,15 @@ class AttentionWrapper(nn.Module):
         position_embeddings = kwargs['position_embeddings']
         position_ids = kwargs['position_ids']
         attention_mask = kwargs['attention_mask']
+
+        global current_embeddings
         #print(f'{(attention_mask.shape)}')
 
         if self.student_attn is not None:
 
             hidden_states = hidden_states.requires_grad_(True)
-            v_first = self.v_first_state.shared_state.data[self.global_rank].clone()
+            v_first = self.v_first_state.shared_state.data.clone()
+            k_first = self.k_first_state.shared_state.data.clone()
             # print(f"AttentionWrapper: layer_idx={self.layer_idx}, attention_mask={self.attention_mask}")
             # print(f"kargs={kwargs}")
             if self.args.grad_cp == 1:
@@ -307,17 +333,23 @@ class AttentionWrapper(nn.Module):
                     if self.student_attn.Attention:
                         if self.args.freeze_hybrid_attention:
                             with torch.no_grad():
-                                #student_hidden_states = self.student_attn(hidden_states, position_embeddings)
-                                teacher_outputs = self.teacher_attn(*args, **kwargs)
-                                student_hidden_states = teacher_outputs[0]
+                                if self.args.stage == 2:
+                                    student_hidden_states = self.student_attn(hidden_states, position_embeddings,current_embeddings)
+                                else:
+                                    teacher_outputs = self.teacher_attn(*args, **kwargs)
+                                    student_hidden_states = teacher_outputs[0]
                         else:
-                            student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, position_embeddings)
+                            #student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, position_embeddings)
+                            student_hidden_states = torch_checkpoint(self.student_attn, hidden_states, position_embeddings,current_embeddings, use_reentrant=False)
                     else:
-                        student_hidden_states,v_first = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, v_first, self.attention_mask, position_embeddings,position_ids)
-                        self.v_first_state.shared_state.data[self.global_rank].copy_(v_first)
-                else:
-                    # we not using
-                    student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states)
+                        #student_hidden_states,v_first = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, v_first, self.attention_mask, position_embeddings,position_ids)
+                        student_hidden_states,v_first,k_first = torch_checkpoint(self.student_attn, hidden_states, v_first,k_first, self.attention_mask, position_embeddings,position_ids, current_embeddings,use_reentrant=False)
+                        self.v_first_state.shared_state.data.copy_(v_first)
+                        self.k_first_state.shared_state.data.copy_(k_first)
+                # else:
+                #     # we not using
+                #    # student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states)
+                #    student_hidden_states = torch_checkpoint(self.student_attn, hidden_states, position_embeddings, use_reentrant=False)
     
             
             #print(student_hidden_states)
@@ -369,8 +401,8 @@ class AttentionWrapper(nn.Module):
             special_attn_loss = 0.0
         else:
             #special_attn_loss = self.comprehensive_attention_mimicking_loss(teacher_hidden_states,student_hidden_states,self.layer_idx,self.args.n_layer,self.args)
-
-            special_attn_loss = torch.linalg.vector_norm(teacher_hidden_states - student_hidden_states, dim=-1).mean() * (teacher_hidden_states[0].size(-1) ** -0.5)
+            special_attn_loss = torch.nn.functional.mse_loss(student_hidden_states, teacher_hidden_states)
+            #special_attn_loss = torch.linalg.vector_norm(teacher_hidden_states - student_hidden_states, dim=-1).mean() * (teacher_hidden_states[0].size(-1) ** -0.5)
         # if self.layer_idx == 0:
         #     print(f'Teacher = {teacher_hidden_states}')
         #     print(f'Student = {student_hidden_states}')
@@ -441,6 +473,8 @@ class HybridModel(nn.Module):
                 gc.collect()
         self.model = transformer_model
         self.add_module("model", self.model)
+
+        self.model.get_input_embeddings().register_forward_hook(embedding_hook)
         
         self.teacher_model = None  # 初始化为None，后续再设置
         self.tokenizer = tokenizer
@@ -498,3 +532,73 @@ class HybridModel(nn.Module):
 
 
 
+def remove_original_weights_for_lora_bone(model):
+    """
+    LoRAやboneが含まれるパラメータがある場合、対応する元のweightを削除する
+    
+    Args:
+        model: PyTorchモデル
+    
+    Returns:
+        removed_params: 削除されたパラメータのリスト
+    """
+    # 削除対象のパラメータを収集
+    lora_bone_params = set()
+    original_weights_to_remove = set()
+    
+    # 全パラメータをチェック
+    for name, param in model.named_parameters():
+        # lora_A, lora_B, boneが含まれているかチェック
+        if any(keyword in name for keyword in ['lora_A', 'lora_B', 'bone']):
+            lora_bone_params.add(name)
+            
+            # 対応する元のweightパラメータ名を推定
+            if 'lora_A' in name:
+                original_name = name.replace('.lora_A', '.weight')
+            elif 'lora_B' in name:
+                original_name = name.replace('.lora_B', '.weight')
+            elif 'bone' in name:
+                # boneの場合は、bone部分を.weightに置き換え
+                if '.bone.' in name:
+                    original_name = name.replace('.bone.', '.weight.')
+                elif name.endswith('.bone'):
+                    original_name = name.replace('.bone', '.weight')
+                else:
+                    # bone_で始まる場合などの処理
+                    parts = name.split('.')
+                    for i, part in enumerate(parts):
+                        if 'bone' in part:
+                            parts[i] = 'weight'
+                            break
+                    original_name = '.'.join(parts)
+            
+            original_weights_to_remove.add(original_name)
+    
+    # 実際に存在する元のweightパラメータのみを削除対象とする
+    params_to_remove = []
+    for original_name in original_weights_to_remove:
+        if any(name == original_name for name, _ in model.named_parameters()):
+            params_to_remove.append(original_name)
+    
+    # パラメータを削除
+    removed_params = []
+    for param_name in params_to_remove:
+        # モジュールの階層を辿ってパラメータを削除
+        parts = param_name.split('.')
+        module = model
+        for part in parts[:-1]:
+            if part.isdigit():
+                module = module[int(part)]
+            else:
+                module = getattr(module, part)
+        
+        param_attr = parts[-1]
+        if hasattr(module, param_attr):
+            delattr(module, param_attr)
+            removed_params.append(param_name)
+            print(f"削除: {param_name}")
+    
+    print(f"\n削除されたパラメータ数: {len(removed_params)}")
+    print(f"LoRA/Boneパラメータ数: {len(lora_bone_params)}")
+    
+    return model

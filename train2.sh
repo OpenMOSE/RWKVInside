@@ -14,15 +14,15 @@ LR_FINAL=1e-5
 WARMUP_STEPS=50
 CKPT_FILE=""
 GRAD_CP=1
-DEEPSPEED_OFFLOAD=1
+DEEPSPEED_OFFLOAD=""
 FULL_PARAMS=""
 STAGE=1
 export WKV=""
-DEEPSTATE_STAGE=2
+DEEPSTATE_STAGE=3
 MAX_TRAINED_TOKENS=100_000_000
 TERMINATE_LOSS=0.01
-WANDB=my-idea-is-the-best-ever
-WANDB_PROJECT=my-idea-is-the-best-ever
+WANDB=runpod-rwkv-dominator-cxa077
+WANDB_PROJECT=runpod-rwkv-dominator-cxa077
 HAS_GROUP_NOMR=""
 FREEZE_MLP=""
 TEACHER_MODEL_ID=""
@@ -72,7 +72,7 @@ WORLD_SIZE=$((NNODES * GPUS_PER_NODE))
 deepspeed \
     --num_nodes $NNODES \
     --num_gpus $GPUS_PER_NODE \
-    train_scripts/train_hybrid_deepspeed2_stage1.py \
+    train_scripts/train_hybrid_deepspeed_stage2.py \
     --deepspeed \
     $DEEPSPEED_OFFLOAD \
     $FULL_PARAMS \

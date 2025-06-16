@@ -456,6 +456,7 @@ sh train.sh -c configs/qwen3_8b.yaml -l 0.00003 -f 0.00001 -m 2048 -b 2 -a 8 -r 
 sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.0002 -f 0.00001 -m 1024 -b 1 -a 5 -r "/home/client/Projects/r2" -o "/home/client/Projects/output/Qwen3-8B/stage1" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 1 -z 1 -P 'cxa077r-qwen3-8b-stage1' -N 1
 
 
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/stage1/epoch_0_step_3200 /home/client/Projects/output/Qwen3-8B/stage1/pytorch_model.bin
 
 
 #8B-Stage1
@@ -513,4 +514,142 @@ sh train.sh -c configs/qwen3_8b.yaml -l 0.000003 -f 0.000003 -m 2048 -b 1 -a 8 -
 
 
 
-sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.0001 -f 0.00001 -m 3328 -b 2 -a 8 -r "/home/client/Projects/r2" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage1' -N 1
+sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.0001 -f 0.00001 -m 3072 -b 2 -a 8 -r "/home/client/Projects/r2" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage1' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1/epoch_0_step_3200 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1/pytorch_model.bin
+
+
+sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.00003 -f 0.00001 -m 3072 -b 2 -a 8 -r "/home/client/Projects/r2" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1p" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage1final' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1p/epoch_0_step_6800 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1p/pytorch_model.bin
+
+
+sh train.sh -c configs/qwen3_8b.yaml -l 0.00003 -f 0.00001 -m 3072 -b 1 -a 32 -r "/home/client/Projects/r2" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage2' -N 1
+
+
+sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.00003 -f 0.00001 -m 3072 -b 2 -a 8 -r "/home/client/Projects/r2" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1p2" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage1final2' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1p2/epoch_0_step_4800 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1p2/pytorch_model.bin
+
+
+sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.0001 -f 0.00001 -m 1024 -b 5 -a 3 -r "/home/client/Projects/r2" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-new" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage1-new' -N 1
+
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-new/epoch_0_step_2000 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-new/pytorch_model.bin
+
+
+
+sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.0001 -f 0.00001 -m 3072 -b 2 -a 8 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-new2" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-new/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage1-new' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-new2/epoch_0_step_8800 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-new2/pytorch_model.bin
+
+
+
+
+FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE"
+
+
+sh train2.sh -c configs/qwen3_8b.yaml -l 0.00001 -f 0.000001 -m 2048 -b 1 -a 1 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-new2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage2-new' -N 1
+
+
+
+
+
+
+
+sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.0001 -f 0.00001 -m 3072 -b 2 -a 8 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage1-ds2" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage1-ds2' -N 1
+
+
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2/epoch_0_step_3200 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2/pytorch_model.bin
+
+
+sh train2_ds2.sh -c configs/qwen3_8b.yaml -l 0.00001 -f 0.000001 -m 4096 -b 1 -a 10 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage2-new' -N 1
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p/epoch_0_step_3000 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p/pytorch_model.bin
+
+
+sh train2_ds2.sh -c configs/qwen3_8b.yaml -l 0.000003 -f 0.000001 -m 4096 -b 1 -a 10 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p2" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage2-new' -N 1
+
+
+sh train2_ds2.sh -c configs/qwen3_8b.yaml -l 0.000008 -f 0.000001 -m 3584 -b 1 -a 10 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p2" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage2-new' -N 1
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p2/epoch_0_step_3000 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p2/pytorch_model.bin
+
+
+
+sh train2_ds2.sh -c configs/qwen3_8b.yaml -l 0.000005 -f 0.000001 -m 3072 -b 2 -a 8 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p3" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage2-new' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p3/epoch_0_step_3000 /home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p3/pytorch_model.bin
+
+
+
+nohup sh train2_ds2.sh -c configs/qwen3_8b.yaml -l 0.000005 -f 0.000001 -m 3072 -b 2 -a 8 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p3" -k "/home/client/Projects/output/Qwen3-8B/cxa078r-hybrid-stage2p3/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-hybrid-qwen3-8b-stage2-new' -N 1 &
+
+
+
+#SHIKIRINAOSHI
+
+sh train_stage1.sh -c configs/qwen3_4b.yaml -l 0.0001 -f 0.00001 -m 1024 -b 11 -a 2 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-4B/cxa078r-stage1" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-stage1' -N 1
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-4B/cxa078r-stage1/epoch_0_step_1200 /home/client/Projects/output/Qwen3-4B/cxa078r-stage1/pytorch_model.bin
+
+
+sh train_stage1.sh -c configs/qwen3_4b.yaml -l 0.0001 -f 0.00001 -m 1024 -b 11 -a 2 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-4B/cxa078r-stage1p" -k "/home/client/Projects/output/Qwen3-4B/cxa078r-stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa078r-stage1' -N 1
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-4B/cxa078r-stage1p/epoch_0_step_6400 /home/client/Projects/output/Qwen3-4B/cxa078r-stage1p/pytorch_model.bin
+
+
+sh train2_ds2.sh -c configs/qwen3_4b.yaml -l 0.00003 -f 0.000001 -m 4096 -b 2 -a 8 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-4B/cxa078r-stage2" -k "/home/client/Projects/output/Qwen3-4B/cxa078r-stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-stage2' -N 1
+
+
+#for Test 8bit
+sh train_stage1.sh -c configs/qwen3_0b6.yaml -l 0.0001 -f 0.00001 -m 1024 -b 1 -a 4 -r "/home/client/Projects/RWKV-LM-RLHF/main/myfolder/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-0.6B/cxa078r-stage1" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 1 -z 1 -P 'cxa078r-stage1-0b6' -N 1
+
+
+
+sh train_stage1.sh -c configs/qwen3_1b7.yaml -l 0.0001 -f 0.00001 -m 1024 -b 6 -a 4 -r "/home/client/Projects/RWKV-LM-RLHF/main/myfolder/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-1.8B/cxa078r-stage1" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 1 -z 1 -P 'cxa078r-stage1-0b6' -N 1
+ 
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-1.8B/cxa078r-stage1/epoch_0_step_1200 /home/client/Projects/output/Qwen3-1.8B/cxa078r-stage1/pytorch_model.bin
+
+
+sh train2_ds2.sh -c configs/qwen3_1b7.yaml -l 0.0001 -f 0.00001 -m 1024 -b 3 -a 4 -r "/home/client/Projects/RWKV-LM-RLHF/main/myfolder/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-1.8B/cxa078r-stage2" -k "/home/client/Projects/output/Qwen3-1.8B/cxa078r-stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'cxa078r-stage1-0b6' -N 1
+ 
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-1.8B/cxa078r-stage2/epoch_0_step_29000 /home/client/Projects/output/Qwen3-1.8B/cxa078r-stage2/pytorch_model.bin
+
+
+sh train2_ds2.sh -c configs/qwen3_1b7.yaml -l 0.0001 -f 0.00001 -m 2560 -b 2 -a 4 -r "/home/client/Projects/RWKV-LM-RLHF/main/myfolder/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-1.8B/cxa078r-stage2p" -k "/home/client/Projects/output/Qwen3-1.8B/cxa078r-stage1/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'cxa078r-stage1-0b6' -N 1
+ 
+
+#
+#
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-4B/cxa078r-stage2/epoch_0_step_16000 /home/client/Projects/output/Qwen3-4B/cxa078r-stage2/pytorch_model.bin
+
+
+
+
+sh train2_ds2.sh -c configs/qwen3_4b.yaml -l 0.00003 -f 0.000001 -m 4096 -b 2 -a 8 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-4B/cxa078r-stage2p" -k "/home/client/Projects/output/Qwen3-4B/cxa078r-stage2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'cxa078r-stage2p' -N 1
+
+
+
+############################
+
+sh train_stage1.sh -c configs/qwen3_8b.yaml -l 0.0001 -f 0.00001 -m 1024 -b 8 -a 2 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa079-stage1p" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 2 -z 1 -P 'cxa079-qwen3-8b-stage1' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-4B/hxa079-stage1p/epoch_0_step_6400 /home/client/Projects/output/Qwen3-8B/hxa079-stage1p/pytorch_model.bin
+
+
+sh train2_ds2.sh -c configs/qwen3_8b.yaml -l 0.00006 -f 0.000001 -m 2048 -b 3 -a 4 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/cxa079-stage2p" -k "/home/client/Projects/output/Qwen3-8B/hxa079-stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'hxa079-stage2p' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/cxa079-stage1p/epoch_0_step_2000 /home/client/Projects/output/Qwen3-8B/cxa079-stage1p/pytorch_model.bin

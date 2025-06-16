@@ -1,7 +1,7 @@
 import sys
 import os
 import torch.nn as nn
-
+import gc
 import random
 import torch
 from typing import List, Optional, Union
@@ -97,166 +97,123 @@ from tqdm import tqdm
 from profiler import timer, time_function
 import bitsandbytes as bnb
 
+import torch
+import gc
+from typing import Dict, Any
+
+def measure_model_memory(model: torch.nn.Module, detailed: bool = True) -> Dict[str, float]:
+    """
+    モデルのVRAM使用量を測定
+    
+    Args:
+        model: 測定対象のモデル
+        detailed: 詳細な内訳を表示するか
+    
+    Returns:
+        メモリ使用量の辞書 (GB単位)
+    """
+    # ガベージコレクションを実行してクリーンな状態にする
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    total_size = 0
+    param_size = 0
+    buffer_size = 0
+    
+    # パラメータのメモリ使用量
+    for name, param in model.named_parameters():
+        if param.is_cuda:
+            size = param.numel() * param.element_size()
+            param_size += size
+            if detailed:
+                size_mb = size / 1024**2
+                print(f"Parameter {name}: {param.shape}, {param.dtype}, {size_mb:.2f} MB")
+    
+    # バッファのメモリ使用量
+    for name, buffer in model.named_buffers():
+        if buffer.is_cuda:
+            size = buffer.numel() * buffer.element_size()
+            buffer_size += size
+            if detailed:
+                size_mb = size / 1024**2
+                print(f"Buffer {name}: {buffer.shape}, {buffer.dtype}, {size_mb:.2f} MB")
+    
+    total_size = param_size + buffer_size
+    
+    return {
+        'total_gb': total_size / 1024**3,
+        'param_gb': param_size / 1024**3,
+        'buffer_gb': buffer_size / 1024**3,
+        'total_mb': total_size / 1024**2,
+        'param_mb': param_size / 1024**2,
+        'buffer_mb': buffer_size / 1024**2,
+    }
+
 def exclude_int8_params_from_zero(model):
     for name, param in model.named_parameters():
         if param.dtype == torch.int8:
             print(f"[ZeRO Exclude] Excluding int8 param from ZeRO: {name}")
             param._no_zero3 = True
-class RandomLayerFreezingLISA:
-    """
-    Implements random layer freezing for LISA (Layer-wise Importance Sampling for Attention).
-    Specifically targets model.model.layers.*.self_attn.student_attn components.
-    """
-    def __init__(
-        self,
-        model_engine,
-        num_hidden_layers,
-        freeze_ratio: float = 0.5,
-        target_pattern: str = "self_attn.student_attn",
-        seed: Optional[int] = 0,
-        update_freq: int = 100,
-    ):
-        """
-        Initialize RandomLayerFreezingLISA.
-        
-        Args:
-            model_engine: DeepSpeed model engine
-            freeze_ratio: Ratio of layers to freeze (between 0.0 and 1.0)
-            target_pattern: Pattern to match for freezing layers
-            seed: Random seed for reproducibility
-            update_freq: Frequency of updating frozen layers (in steps)
-        """
-        self.model_engine = model_engine
-        self.freeze_ratio = freeze_ratio
-        self.target_pattern = target_pattern
-        self.update_freq = update_freq
-        self.step_counter = 0
-        
-        # Set random seed if provided
-        if seed is not None:
-            random.seed(seed)
-            
-        # Get the number of layers
-        self.num_layers = num_hidden_layers#self.model_engine.module.config.num_hidden_layers
-        
-        # Initialize list of layers
-        self.all_layers = list(range(self.num_layers))
-        self.frozen_layers = []
-        
-        # Initialize freezing
-        self._update_frozen_layers()
-    
-    def _update_frozen_layers(self):
-        """Update which layers are frozen based on random selection."""
-        # Calculate number of layers to freeze
-        num_frozen = int(self.num_layers * self.freeze_ratio)
-        
-        # Randomly select layers to freeze
-        self.frozen_layers = random.sample(self.all_layers, num_frozen)
-        
-        # Apply freezing
-        self._apply_freezing()
-        
-        #if self.model_engine.global_rank == 0:
-        print(f"Updated frozen layers: {self.frozen_layers}")
-    
-    def _apply_freezing(self):
-        """Apply freezing to selected layers."""
-        # First unfreeze all layers
-        self._unfreeze_all_layers()
-        
-        # Then freeze selected layers
-        for layer_idx in self.frozen_layers:
-            # Get the layer
-            layer = self.model_engine.module.model.model.layers[layer_idx]
-            
-            # Find and freeze student attention parameters
-            for name, param in layer.named_parameters():
-                if self.target_pattern in name:
-                    param.requires_grad = False
-                    param.grad = None
 
-        torch.cuda.empty_cache()
-        
-    
-    def _unfreeze_all_layers(self):
-        """Unfreeze all layers."""
-        for layer_idx in range(self.num_layers):
-            layer = self.model_engine.module.model.model.layers[layer_idx]
-            for name, param in layer.named_parameters():
-                if self.target_pattern in name:
-                    param.requires_grad = True
-    
-    def step(self):
-        """
-        Step function to be called during training loop.
-        Updates frozen layers based on update frequency.
-        """
-        self.step_counter += 1
-        
-        # Update frozen layers if it's time
-        if self.step_counter % self.update_freq == 0:
-            self._update_frozen_layers()
-
-# 一部のモジュールを量子化する
-def replace_with_bnb_linear_(model, module_names=None, threshold=6*1024):
-    for name, module in model.named_modules():
-        if module_names is not None and not any(mn in name for mn in module_names):
-            continue
+# # 一部のモジュールを量子化する
+# def replace_with_bnb_linear_(model, module_names=None, threshold=6*1024):
+#     for name, module in model.named_modules():
+#         if module_names is not None and not any(mn in name for mn in module_names):
+#             continue
             
-        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
-            newmodule = bnb.nn.Linear4bit(
-                module.in_features, 
-                module.out_features, 
-                bias=module.bias is not None,
-                compute_dtype=torch.bfloat16
-            )
-            # 重みを変換
-            newmodule.weight = bnb.nn.Params4bit(
-                module.weight.data, 
-                requires_grad=False, 
-                quant_type="nf4"
-            )
-            if module.bias is not None:
-                newmodule.bias = module.bias
-            # モジュールを置き換え
-            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
-            parent = model if parent_name == '' else model.get_submodule(parent_name)
-            child_name = name.rsplit('.', 1)[1] if '.' in name else name
-            setattr(parent, child_name, newmodule)
+#         if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
+#             newmodule = bnb.nn.Linear4bit(
+#                 module.in_features, 
+#                 module.out_features, 
+#                 bias=module.bias is not None,
+#                 compute_dtype=torch.bfloat16
+#             )
+#             # 重みを変換
+#             newmodule.weight = bnb.nn.Params4bit(
+#                 module.weight.data, 
+#                 requires_grad=False, 
+#                 quant_type="nf4"
+#             )
+#             if module.bias is not None:
+#                 newmodule.bias = module.bias
+#             # モジュールを置き換え
+#             parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
+#             parent = model if parent_name == '' else model.get_submodule(parent_name)
+#             child_name = name.rsplit('.', 1)[1] if '.' in name else name
+#             setattr(parent, child_name, newmodule)
             
-    return model
+#     return model
 
 
-def replace_with_bnb_linear(model, module_names=None, threshold=6*1024):
-    #return model
-    for name, module in model.named_modules():
-        print(f'{name}')
-        if module_names is not None and not any(mn in name for mn in module_names):
-            print('continue')
-            continue
+# def replace_with_bnb_linear(model, module_names=None, threshold=6*1024):
+#     #return model
+#     for name, module in model.named_modules():
+#         print(f'{name}')
+#         if module_names is not None and not any(mn in name for mn in module_names):
+#             print('continue')
+#             continue
             
-        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
-            # 4ビットから8ビットに変更
-            newmodule = bnb.nn.Linear8bitLt(
-                module.in_features, 
-                module.out_features, 
-                bias=module.bias is not None,
-                has_fp16_weights=False,  # FP16重みを使用しない
-                threshold=6.0  # 量子化のしきい値
-            )
-            # 重みをコピー（8ビット用）
-            newmodule.weight.data = module.weight.data.clone()
+#         if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
+#             # 4ビットから8ビットに変更
+#             newmodule = bnb.nn.Linear8bitLt(
+#                 module.in_features, 
+#                 module.out_features, 
+#                 bias=module.bias is not None,
+#                 has_fp16_weights=False,  # FP16重みを使用しない
+#                 threshold=6.0  # 量子化のしきい値
+#             )
+#             # 重みをコピー（8ビット用）
+#             newmodule.weight.data = module.weight.data.clone()
             
-            if module.bias is not None:
-                newmodule.bias = module.bias
-            # モジュールを置き換え
-            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
-            parent = model if parent_name == '' else model.get_submodule(parent_name)
-            child_name = name.rsplit('.', 1)[1] if '.' in name else name
-            setattr(parent, child_name, newmodule)
+#             if module.bias is not None:
+#                 newmodule.bias = module.bias
+#             # モジュールを置き換え
+#             parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
+#             parent = model if parent_name == '' else model.get_submodule(parent_name)
+#             child_name = name.rsplit('.', 1)[1] if '.' in name else name
+#             setattr(parent, child_name, newmodule)
             
-    return model
+#     return model
 
 
 def create_arg_parser():
@@ -334,11 +291,23 @@ def create_arg_parser():
     parser.add_argument('--stage', type=int, default=1,choices=[1,2,3], help='stage 1 only align attn output and stage 2 do kl-divergence,and stage 3 do SFT')
     parser.add_argument('--max_trained_tokens', type=int, default=100_000_000, help='max trained tokens')
     parser.add_argument('--terminate_at_loss', type=float, default=0, help='terminate the training at loss')
-    parser.add_argument('--lisa', type=int, default=1, help='lisa')
+
     parser.add_argument('--freeze_attention', type=int, default=0, help='Freeze Receptance,Key,Value')
-    parser.add_argument('--use_bitsandbytes', type=int, default=0, help='apply 8bitlinear with bitsandbytes')
-    parser.add_argument('--hybrid_attention_layers', type=int, default=6, help='Hybrid Attention Layers')
-    parser.add_argument('--freeze_hybrid_attention', type=int, default=1, help='Freeze Hybrid Attention q,k,v')
+    parser.add_argument('--hybrid_attention_layers', type=int, default=0, help='Hybrid Attention Layers')
+    parser.add_argument('--freeze_hybrid_attention', type=int, default=0, help='Freeze Hybrid Attention q,k,v')
+    parser.add_argument('--allow_quant_frozen_layers', type=int, default=1, help='allow quant frozen layers')
+    parser.add_argument('--quant_mode', type=str, default="int8", help='quant in peft mode except full')
+    parser.add_argument('--peftmode', type=str, default="full", help='peftmode full,lora,dora,bone')
+    parser.add_argument('--peft_r', type=int, default=64, help='peft block lora rank')
+    parser.add_argument('--peft_scaling', type=float, default=0.5, help='peft block lora scaling')
+    parser.add_argument('--peft_dropout', type=float, default=0.01, help='peft block lora dropout')
+
+    parser.add_argument('--bnb_optimizer_mode', type=int, default=0, help='Use Bitsandbytes 8bit optimizer AdamW')
+
+
+    
+
+
     return parser
 
 def lr_schedule(args, step):
@@ -393,7 +362,7 @@ def on_train_batch_start(args, model_engine, global_step, epoch):
             f.write(f"NEW RUN {time.strftime('%Y-%m-%d %H:%M:%S')}\n{vars(args)}\n")
 
     return lr, wd_now
-
+from bnbwrapper import quantize_and_replace_with_wrapper,quantize_mlp_layers_properly
 # 在主训练循环开始前初始化tqdm
 pbar = None
 total_loss = 0
@@ -483,6 +452,7 @@ class TeacherAttnManager:
         self.layers = layers
         self.stored_teacher_attns = {}
         self.stored_vfirst_state = {}
+        self.stored_kfirst_state = {}
         
     @contextlib.contextmanager
     def temporarily_remove_teacher_attn(self):
@@ -502,6 +472,9 @@ class TeacherAttnManager:
                 if hasattr(attention_wrapper, 'v_first_state'):
                     self.stored_vfirst_state[layer_idx] = attention_wrapper.v_first_state
                     attention_wrapper.v_first_state = None
+                if hasattr(attention_wrapper, 'k_first_state'):
+                    self.stored_kfirst_state[layer_idx] = attention_wrapper.k_first_state
+                    attention_wrapper.k_first_state = None
             
             yield  # 允许在此上下文中执行代码
             
@@ -514,185 +487,15 @@ class TeacherAttnManager:
                 if hasattr(attention_wrapper, 'add_module') and not hasattr(attention_wrapper, 'teacher_attn'):
                     attention_wrapper.add_module("teacher_attn", stored_attn)
                 v_first_state = self.stored_vfirst_state.get(layer_idx, None)
+                k_first_state = self.stored_kfirst_state.get(layer_idx, None)
                 if v_first_state is not None:
                     attention_wrapper.v_first_state = v_first_state
+                if k_first_state is not None:
+                    attention_wrapper.k_first_state = k_first_state
             # 清空存储的引用
             self.stored_teacher_attns.clear()
 
-# 方法1: DeepSpeedのquantization_infoメソッドを使用する（利用可能な場合）
-def check_quantization_deepspeed_api(model_engine):
-    """DeepSpeedのAPIを使用して量子化状態を確認する"""
-    if hasattr(model_engine, 'quantization_info'):
-        quant_info = model_engine.quantization_info()
-        print("Quantization info from DeepSpeed API:", quant_info)
-        return quant_info
-    else:
-        print("quantization_info メソッドが見つかりません。代替方法を使用します。")
-        return None
 
-# 方法2: モデルの内部状態を調査する
-def inspect_model_parameters(model_engine):
-    """モデルパラメータを調査して量子化状態を確認する"""
-    print("\n=== モデルパラメータの調査 ===")
-    
-    # DeepSpeedエンジンから実際のモデルを取得
-    model = model_engine.module
-    
-    # 量子化されているはずのパラメータに関する情報を収集
-    stats = {
-        'total_params': 0,
-        'quantized_params': 0,
-        'mlp_params': 0,
-        'mlp_quantized': 0,
-        'param_dtypes': {},
-        'param_shapes': {}
-    }
-    
-    # モジュールとパラメータを調査
-    for name, module in model.named_modules():
-        is_mlp = 'mlp' in name.lower()
-        
-        # 各モジュールのパラメータを調査
-        for param_name, param in module.named_parameters(recurse=False):
-            full_name = f"{name}.{param_name}"
-            stats['total_params'] += 1
-            
-            # データ型を記録
-            dtype_str = str(param.dtype)
-            stats['param_dtypes'][dtype_str] = stats['param_dtypes'].get(dtype_str, 0) + 1
-            
-            # パラメータの形状を記録
-            shape_str = str(list(param.shape))
-            stats['param_shapes'][shape_str] = stats['param_shapes'].get(shape_str, 0) + 1
-            
-            # MLPパラメータの場合は別途カウント
-            if is_mlp:
-                stats['mlp_params'] += 1
-                
-                # 量子化されたパラメータの検出
-                # 4ビット量子化の場合、通常はInt8張力になるか特殊な属性を持つ
-                if hasattr(param, '_quantized') or hasattr(param, 'quant_state'):
-                    stats['mlp_quantized'] += 1
-                    stats['quantized_params'] += 1
-                # または型やサイズから推測
-                elif param.dtype == torch.int8 or param.dtype == torch.uint8:
-                    stats['mlp_quantized'] += 1
-                    stats['quantized_params'] += 1
-            # 非MLPパラメータでも量子化検出
-            elif hasattr(param, '_quantized') or hasattr(param, 'quant_state') or param.dtype in [torch.int8, torch.uint8]:
-                stats['quantized_params'] += 1
-    
-    # 結果表示
-    print(f"合計パラメータ数: {stats['total_params']}")
-    print(f"量子化されたパラメータ数: {stats['quantized_params']}")
-    print(f"MLPパラメータ数: {stats['mlp_params']}")
-    print(f"量子化されたMLPパラメータ数: {stats['mlp_quantized']}")
-    print(f"データ型分布: {stats['param_dtypes']}")
-    print(f"パラメータ形状分布: {len(stats['param_shapes'])} 種類")
-    
-    return stats
-
-# 方法3: DeepSpeedの内部状態ダンプを使用する
-def check_deepspeed_state(model_engine):
-    """DeepSpeedの内部状態をダンプして確認する"""
-    if hasattr(model_engine, 'dump_state'):
-        print("\n=== DeepSpeedの状態ダンプ ===")
-        state = model_engine.dump_state()
-        
-        # 量子化関連の設定を確認
-        if 'quantization' in state:
-            print("量子化設定:", state['quantization'])
-        elif 'weight_quantization' in state:
-            print("重み量子化設定:", state['weight_quantization'])
-        else:
-            print("状態ダンプに量子化情報が見つかりません")
-        
-        return state
-    else:
-        print("dump_stateメソッドが見つかりません")
-        return None
-
-# 方法4: ログファイルから確認する（ランク0のプロセスのみで実行）
-def check_logs_for_quantization(args):
-    """ログファイルから量子化情報を確認する"""
-    if args.local_rank == 0:  # ランク0のプロセスのみで実行
-        print("\n=== ログファイルの確認 ===")
-        import glob
-        import os
-        
-        # DeepSpeedのログディレクトリを探す
-        log_dirs = glob.glob('./deepspeed_*') + glob.glob('./logs/deepspeed_*')
-        
-        for log_dir in log_dirs:
-            log_files = glob.glob(os.path.join(log_dir, '*.log'))
-            for log_file in log_files:
-                print(f"ログファイル {log_file} を確認中...")
-                with open(log_file, 'r') as f:
-                    log_content = f.read()
-                    
-                    # 量子化関連のログエントリを探す
-                    quant_logs = [line for line in log_content.split('\n') 
-                                  if 'quant' in line.lower() or 'bit' in line.lower()]
-                    
-                    if quant_logs:
-                        print("量子化関連のログエントリ:")
-                        for line in quant_logs:
-                            print(f"  {line}")
-                    else:
-                        print("  量子化関連のログエントリが見つかりません")
-
-# 方法5: 実際のデータを表示して確認
-def inspect_actual_weights(model_engine):
-    """実際の重みデータを調査して量子化を確認する"""
-    model = model_engine.module
-    
-    print("\n=== 実際の重みデータの調査 ===")
-    # MLPモジュールを探す
-    mlp_modules = [(name, module) for name, module in model.named_modules() 
-                   if 'mlp' in name.lower()]
-    
-    for name, module in mlp_modules[:2]:  # 最初の2つだけ表示（多すぎないように）
-        print(f"\nモジュール: {name}")
-        for param_name, param in module.named_parameters(recurse=False):
-            print(f"  パラメータ: {param_name}")
-            print(f"    形状: {param.shape}")
-            print(f"    データ型: {param.dtype}")
-            
-            # パラメータの統計を表示
-            if param.numel() > 0:
-                try:
-                    param_data = param.data
-                    print(f"    最小値: {param_data.min().item()}")
-                    print(f"    最大値: {param_data.max().item()}")
-                    print(f"    ユニークな値の数: {torch.unique(param_data).numel()}")
-                    
-                    # 4ビット量子化された場合、ユニーク値は最大16個になるはず
-                    if torch.unique(param_data).numel() <= 16:
-                        print("    *** このパラメータは4ビット量子化されている可能性が高い ***")
-                    elif torch.unique(param_data).numel() <= 256:
-                        print("    *** このパラメータは8ビット量子化されている可能性が高い ***")
-                except Exception as e:
-                    print(f"    エラー: {e}")
-
-# すべての確認方法を実行
-def verify_quantization(model_engine):
-    """量子化状態を総合的に確認する"""
-    print("\n=== 量子化状態の確認 ===")
-    
-    # 方法1: DeepSpeedのAPI
-    check_quantization_deepspeed_api(model_engine)
-    
-    # 方法2: モデルパラメータの調査
-    inspect_model_parameters(model_engine)
-    
-    # 方法3: DeepSpeedの状態ダンプ
-    check_deepspeed_state(model_engine)
-    
-    ## 方法4: ログファイルの確認
-    #check_logs_for_quantization(args)
-    
-    # 方法5: 実際の重みデータの調査
-    inspect_actual_weights(model_engine)
 
 
 if __name__ == '__main__':
@@ -714,6 +517,8 @@ if __name__ == '__main__':
     print(config)
     #print(config['RWKV']['layers'])
     #exit()
+    DeviceID = f'cuda:{args.local_rank}'
+    args.DeviceID = DeviceID
     
     
     # 设置设备和数据类型
@@ -722,7 +527,7 @@ if __name__ == '__main__':
     
     # 加载模型和分词器
     transformer_model = AutoModelForCausalLM.from_pretrained(config['Llama']['model_id'],
-                                                            torch_dtype=dtype, device_map='cpu',low_cpu_mem_usage=True)
+                                                            torch_dtype=dtype, device_map=DeviceID,low_cpu_mem_usage=True)
     tokenizer = AutoTokenizer.from_pretrained(config['Llama']['model_id'])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -761,6 +566,9 @@ if __name__ == '__main__':
     args.is_sft = config.get('is_sft', False)
     args.is_all_labels_kl = config.get('is_all_labels_kl', False)
     print(f'{transformer_model.config.num_hidden_layers}')
+
+    if args.bnb_optimizer_mode:
+        args.deepspeed_offload = False
     
     # 初始化混合模型
     #if args.stage == 1:
@@ -775,11 +583,30 @@ if __name__ == '__main__':
     os.environ["RWKV_HEAD"] = str(int(args.n_embd // args.head_size_a))
     os.environ["RWKV_HEAD_SIZE_A"] = str(int(args.head_size_a))
     os.environ["RWKV_MIRCO_BSZ"] = str(int(args.micro_bsz))
+#     parser.add_argument('--quant_mode', type=str, default="int8", help='quant in peft mode except full')
+#     parser.add_argument('--peftmode', type=str, default="full", help='peftmode full,lora,dora,bone')
+#     parser.add_argument('--peft_r', type=int, default=32, help='peft block lora rank')
+#     parser.add_argument('--peft_scaling', type=float, default=0.5, help='peft block lora scaling')
+#     parser.add_argument('--peft_dropout', type=float, default=0.01, help='peft block lora dropout')
+    
+    os.environ['RWKV_ATTN_PEFTMODE'] = str(args.peftmode)
+    os.environ['RWKV_ATTN_QUANT'] = str(args.quant_mode)
+    os.environ['RWKV_ATTN_PEFT_R'] = str(args.peft_r)
+    os.environ['RWKV_ATTN_PEFT_SCALING'] = str(args.peft_scaling)
+    os.environ['RWKV_ATTN_PEFT_DROPOUT'] = str(args.peft_dropout)
 
-    from hybrid_model import HybridModel,VFirstHolder
+    from hybrid_model import HybridModel,VFirstHolder,KFirstHolder
 
     model = HybridModel(transformer_model, args, tokenizer)
-    model = model.to(dtype=torch.bfloat16)
+    #model = model.to(dtype=torch.bfloat16, device=DeviceID)
+
+    # model = HybridModel(transformer_model, args, tokenizer)
+    # model = model.to(dtype=torch.bfloat16, device=DeviceID)
+    # pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
+
+    model = quantize_and_replace_with_wrapper(model, patterns=["mlp"], threshold=0)
+
+    #model = quantize_mlp_layers_properly(model,device=DeviceID)
 
     
 
@@ -816,7 +643,7 @@ if __name__ == '__main__':
             if i < args.n_layer - args.hybrid_attention_layers:
                 weight_mul_r = 1.0
                 weight_mul_k = 1.0
-                weight_mul_v = 0.2
+                weight_mul_v = 0.3
                 weight_mul_o = 0.5 
             else:
                 weight_mul_r = 1.0
@@ -1086,34 +913,12 @@ if __name__ == '__main__':
 
 
 
-    #if args.use_bitsandbytes:
-        # print('bnb')
-        # #exit()
-        # freeze_as_int8_buffer(model, freeze_names=["mlp","head"])
-        # freeze_as_int8_buffer(teacher_attn_module_list, freeze_names=["proj"])
 
-        #inspect_model_parameters(model)
-        #exit()
-        
-
-    #exit()
-
-
-
-
-    # if args.local_rank == 0:
-    #     #print(model)
-    #     for name, param in model.named_parameters():
-    #         if name == pname:
-    #             mean_of_param = param.mean().item()
-    #             std_of_param = param.std().item()
-    #             print(f"Parameter {name}: mean={mean_of_param:.6f}, std={std_of_param:.6f}")
-
-
-    # 设置模型参数的训练状态
 
     print(f'Stage1 Only self_attn params are trainable')
-    for name,param in model.named_parameters():
+  
+
+    for name, param in model.named_parameters():
         Attention = 0
         for i in range(args.n_layer):
             t = f'layers.{i}.'
@@ -1123,15 +928,11 @@ if __name__ == '__main__':
             elif t in name:
                 Attention = 1
                 break
-
-
-
-
         print(f'{name} {param.dtype}')
-        if Attention==0 and args.freeze_attention and ('self_attn.student_attn' in name and ('receptance' in name or 'key' in name or 'value' in name)):
+        if Attention == 0 and args.freeze_attention and ('self_attn.student_attn' in name and ('receptance' in name or 'key' in name or 'value' in name)):
             param.requires_grad = False
             print(f'{name} Frozen')
-        elif Attention==1 and args.freeze_hybrid_attention and ('self_attn.student_attn' in name and ('q_proj' in name or 'k_proj' in name or 'v_proj' in name or 'o_proj' in name or 'q_norm' in name or 'k_norm' in name)):
+        elif Attention == 1 and args.freeze_hybrid_attention and ('self_attn.student_attn' in name and ('q_proj' in name or 'k_proj' in name or 'v_proj' in name or 'o_proj' in name or 'q_norm' in name or 'k_norm' in name)):
             param.requires_grad = False
             print(f'{name} Frozen')
         #
@@ -1141,8 +942,107 @@ if __name__ == '__main__':
         else:
             param.requires_grad = False
             print(f'{name} Frozen')
-   # exit()
+    lora_base_modules = set()
+    if args.peftmode != 'full':
+        print('freeze original weight if peft linears')
+        
+        # まず、LoRAモジュールを持つベースモジュール名を収集
+        
+        for name, param in model.named_parameters():
+            if 'lora_A' in name or 'lora_B' in name:
+                # "blocks.0.att.receptance.lora_A.weight" -> "blocks.0.att.receptance"
+                base_module_name = name.rsplit('.lora_', 1)[0]
+                lora_base_modules.add(base_module_name)
+                # LoRAパラメータ自体は学習可能にする
+                param.requires_grad = True
+                print(f'{name} LoRA param - will train!')
 
+            elif 'bone' in name:
+                # "blocks.0.att.receptance.lora_A.weight" -> "blocks.0.att.receptance"
+                base_module_name = name.rsplit('.bone', 1)[0]
+                lora_base_modules.add(base_module_name)
+                # LoRAパラメータ自体は学習可能にする
+                param.requires_grad = True
+                print(f'{name} Bone param - will train!')
+        
+        # LoRAモジュールに対応する元のweight/biasをフリーズ
+        for name, param in model.named_parameters():
+            for base_module in lora_base_modules:
+                # 元のweightをフリーズ
+                if name == f"{base_module}.weight":
+                    param.requires_grad = False
+                    print(f'{name} Frozen (has LoRA)')
+                # biasが存在する場合はフリーズ
+                elif name == f"{base_module}.bias":
+                    param.requires_grad = False
+                    print(f'{name} Frozen (has LoRA)')
+
+    # 最終的な学習可能パラメータの確認
+    print("\n=== Final trainable parameters ===")
+    trainable_params = 0
+    total_params = 0
+    for name, param in model.named_parameters():
+        total_params += param.numel()
+        if param.requires_grad:
+            trainable_params += param.numel()
+            print(f"  {name}: {param.shape}")
+
+
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    print(f"\nTrainable params: {trainable_params:,} / Total params: {total_params:,}")
+    print(f"Trainable ratio: {trainable_params/total_params*100:.2f}%")
+    print(f'current gpu memory BEFORE quant: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
+    print('sleep 10sec')
+    print(measure_model_memory(model))
+    #time.sleep(10)
+    #Quant Phase
+    if args.quant_mode != "none":
+        for name, m in model.named_modules():
+            Attention = 0
+            for i in range(args.n_layer):
+                t = f'layers.{i}.'
+                if t in name and i < args.n_layer - args.hybrid_attention_layers:
+                    Attention = 0
+                    break
+                elif t in name:
+                    Attention = 1
+                    break
+            #print(f'{name} {param.dtype}')
+            if Attention == 0 and args.freeze_attention and ('self_attn.student_attn' in name and ('receptance' in name or 'key' in name or 'value' in name)):
+                if hasattr(m, "quant") and callable(getattr(m, "quant")):
+                    m.quant(args.quant_mode,DeviceID)
+                    #print(f'{name} Quant on {DeviceID}. frozen RWKV')
+            elif Attention == 1 and args.freeze_hybrid_attention and ('self_attn.student_attn' in name and ('q_proj' in name or 'k_proj' in name or 'v_proj' in name or 'o_proj' in name or 'q_norm' in name or 'k_norm' in name)):
+                if hasattr(m, "quant") and callable(getattr(m, "quant")):
+                    m.quant(args.quant_mode,DeviceID)
+                    #print(f'{name} Quant on {DeviceID} frozen GQA')
+            else:
+                for base_module in lora_base_modules:
+                    if name == f"{base_module}" and hasattr(m, "quant") and callable(getattr(m, "quant")):
+                        m.quant(args.quant_mode,DeviceID)
+                        #print(f'{name} Quant on {DeviceID} train peft')
+
+    for name, m in model.named_parameters():
+        print(f'{name} requires_grad = {m.requires_grad}')
+
+ 
+    gc.collect()
+    torch.cuda.empty_cache()
+
+
+    print(f'current gpu memory BEFORE after quant: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
+    print('sleep 10sec')
+    print(measure_model_memory(model))
+    #time.sleep(10)
+            
+
+    #exit()
+
+
+
+        
     # 准备数据加载器
     if args.preprocessed_data is not None:
         print(f'load preprocessed data from {args.preprocessed_data}')
@@ -1234,14 +1134,14 @@ if __name__ == '__main__':
                 "fp32_reduce_scatter": True,
                 "zero_optimization": {
                     "stage": args.deepspeed_stage,
-                    "stage3_max_live_parameters": 1e8,
-                    "stage3_max_reuse_distance": 1e8,
-                    "stage3_param_persistence_threshold": 1e4,
-                    "memory_efficient_linear": True,
-                    "stage3_gather_16bit_weights_on_model_save": False,
-                    #"zero_quantized_weights": True,
-                    "zero_hpz_partition_size": args.world_size,
-                    "zero_quantized_gradients": True,
+                    # "stage3_max_live_parameters": 1e8,
+                    # "stage3_max_reuse_distance": 1e8,
+                    # "stage3_param_persistence_threshold": 1e4,
+                    # "memory_efficient_linear": True,
+                    # "stage3_gather_16bit_weights_on_model_save": False,
+                    # #"zero_quantized_weights": True,
+                    # "zero_hpz_partition_size": args.world_size,
+                    # "zero_quantized_gradients": True,
                     "offload_optimizer": {
                         "device": "cpu",
                         "pin_memory": False,
@@ -1310,92 +1210,35 @@ if __name__ == '__main__':
         )
 
         del model
+
+        
+
+        for name, m in model_engine.module.model.named_parameters():
+            print(f'{name} requires_grad = {m.requires_grad}')
+        gc.collect()
         torch.cuda.empty_cache()
 
 
-        #verify_quantization(model_engine)
+        print('wait 10sec')
+        time.sleep(10)
 
         #exit()
 
-        
-        # # 添加验证代码
-        # for name, param in model_engine.module.named_parameters():
-        #     if name == pname:
-        #         with deepspeed.zero.GatheredParameters(param):
-        #             if args.local_rank == 0:  # 只在 rank 0 打印
-        #                 print(f"Parameter {name}:")
-        #                 print(f"  - mean: {param.mean().item():.6f} versus {mean_of_param:.6f}")
-        #                 print(f"  - std: {param.std().item():.6f} versus {std_of_param:.6f}")
-        #             break
-            
-            
-        #we only init  teacher related stuff when is_sft is False
-        #init the VFirstHolder with (B,T,C) shape
-        vfirst_holder = VFirstHolder(args.micro_bsz, args.max_seq_length, args.dim_att,model_engine.world_size)
-        vfirst_holder.requires_grad_(False)
-        if args.deepspeed_stage == 3:
-            ds_config_state = {
-                "zero_force_ds_cpu_optimizer": False,
-                "train_batch_size": args.train_batch_size,
-                "bf16": {"enabled": True},
-                "zero_optimization": {
-                    "stage": args.deepspeed_stage,
-                    # 减小缓冲区大小
-                    "stage3_prefetch_bucket_size": 5e5,  # 更小的预取缓冲区
-                    "stage3_param_persistence_threshold": 1e3,  # 更小的参数持久化阈值
-                    "reduce_bucket_size": 5e5,  # 更小的归约缓冲区
-                    
-                    # 最小化内存使用
-                    "memory_efficient_linear": True,
-                    "contiguous_gradients": False,
-                    
-                    # # 如果需要 CPU offload，使用最小配置
-                    # "offload_param": {
-                    #     "device": "cpu",
-                    #     "pin_memory": False,
-                    #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     "max_in_cpu" : 1e7
-                    # },
-                    # "offload_optimizer": {
-                    #     "device": "cpu",
-                    #     "pin_memory": True,
-                    #     "buffer_count": 4
-                    # },
-                    
-                    # 简化通信设置
-                    "allgather_partitions": True,
-                    "reduce_scatter": True,
-                    "overlap_comm": False,
-                },
-                # 禁用不必要的功能
-                "wall_clock_breakdown": False,
-                "dump_state": False,
-                
-                # 如果状态不需要梯度，可以禁用相关优化
-                "optimizer": None if args.deepspeed_stage == 3 else {
-                        "type": "AdamW",
-                        "params": {
-                            "lr": args.learning_rate,
-                            "betas": [0.9, 0.999],
-                            "eps": 1e-8,
-                            "weight_decay": 0.01
-                        }
-                    },
-                "scheduler": None,
-            }
-            state_engine, _, _, _ = deepspeed.initialize(
-                model=vfirst_holder,
-                config=ds_config
-            )
-            print(f'Zero 3 will potentially split different layers to different processes')
-            for layer_idx in args.layers:
-                attn_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
-                attn_wrapper.v_first_state = state_engine.module
-                attn_wrapper.global_rank = model_engine.global_rank
-            del vfirst_holder
 
+         
+        vfirst_holder = VFirstHolder(args.micro_bsz, args.max_seq_length,args.num_key_value_heads,args.head_size_a,device=DeviceID)
+        vfirst_holder.requires_grad_(False)
+
+        kfirst_holder = KFirstHolder(args.micro_bsz, args.max_seq_length,args.num_key_value_heads,args.head_size_a,device=DeviceID)
+        kfirst_holder.requires_grad_(False)
+        
+        print(f'Zero 2 will hold the model in one GPU process,set the vfirst_holder to model_engine')
+        for layer_idx in args.layers:
+            attn_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
+            attn_wrapper.v_first_state = vfirst_holder
+            attn_wrapper.k_first_state = kfirst_holder
         timer.initialize_with_engine(model_engine)
+        #timer.initialize_with_engine(model_engine)
         #print current gpu memory
         if args.local_rank == 0:
             print(f'current gpu memory AFTER initializing deepspeed: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
@@ -1414,37 +1257,11 @@ if __name__ == '__main__':
                 "bf16": {
                     "enabled": True
                 },
-                # 'weight_quantization': {
-                #     'quantized_initialization': {
-                #         'num_bits': 4,
-                #         'group_size': 256,
-                #         'group_dim': 1,
-                #         'symmetric': False
-                #     },
-                # },
+         
                 "zero_optimization": {
                     "stage": args.deepspeed_stage,
-                    "stage3_max_live_parameters": 1e9,
-                    "stage3_max_reuse_distance": 1e9,
-                    "stage3_prefetch_bucket_size": 5e6,
-                    "memory_efficient_linear": True,
-                    "stage3_param_persistence_threshold": 1e4,
-
-                    #"zero_quantized_weights": True,
-                    "zero_hpz_partition_size": args.world_size,
-                    "zero_quantized_gradients": True,
-                    # "offload_param": {
-                    #     "device": "cpu",
-                    #     "pin_memory": False,
-                    #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     #"max_in_cpu" : 1e8
-                    # },
-                    # "offload_optimizer": {
-                    #     "device": "cpu",
-                    #     "pin_memory": True,
-                    #     "buffer_count": 4
-                    # },
+                    # "stage3_max_live_parameters": 1e9,
+                  
                     "allgather_partitions": True,
                     "reduce_scatter": True,
                     "reduce_bucket_size": 5e6,
@@ -1455,26 +1272,32 @@ if __name__ == '__main__':
                 "dump_state": True
             }
             teacher_attn_module_list.requires_grad_(False)
+
+            teacher_engine = teacher_attn_module_list
             
             #teacher_trainable_params = (p for p in teacher_attn_module_list.parameters() if p.requires_grad)
             # exclude_int8_params_from_zero(teacher_attn_module_list)
-            teacher_engine, _, _, _ = deepspeed.initialize(
-                model=teacher_attn_module_list,
-                config=ds_config,
-                #model_parameters=teacher_trainable_params,
-            )
+            # ダミーオプティマイザーを作成（学習率0で実質的に更新しない）
+            # from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
+            # dummy_optimizer = DeepSpeedCPUAdam(teacher_attn_module_list.parameters(), lr=0.0)
+            # teacher_engine, _, _, _ = deepspeed.initialize(
+            #     model=teacher_attn_module_list,
+            #     config=ds_config,
+            #     optimizer=dummy_optimizer,
+            #     #model_parameters=teacher_trainable_params,
+            # )
             # 遍历所有层
             for layer_idx in args.layers:
                 if args.local_rank == 0:
                     print(f'set teacher attn for layer {layer_idx}')
                 attention_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
-                teacher_attn = teacher_engine.module[layer_idx]
+                teacher_attn = teacher_engine[layer_idx]
                 attention_wrapper.teacher_attn = teacher_attn
                 attention_wrapper.add_module("teacher_attn", teacher_attn)
                 
             
             # 清理不再需要的引用
-            del teacher_attn_module_list
+            #del teacher_attn_module_list
             torch.cuda.empty_cache()
             if args.local_rank == 0:
                 print(f'current gpu memory AFTER initializing teacher attn list: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
@@ -1516,13 +1339,17 @@ if __name__ == '__main__':
     FirstTime = True
 
     #lisa_freezer.step()
+    gc.collect()
+    torch.cuda.empty_cache()
 
     for epoch in range(args.max_epochs):
         model_engine.train()
         if model_engine.global_rank == 0:
             pbar = tqdm(total=args.epoch_steps, desc=f"Epoch {epoch}")
-
+        gc.collect()
+        torch.cuda.empty_cache()
         for batch_idx, batch in enumerate(train_dataloader):
+            
 
             # if FirstTime:
             #     FirstTime = False
