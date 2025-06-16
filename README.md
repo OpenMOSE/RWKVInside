@@ -1,83 +1,78 @@
-# RWKVInside 🧠⚡
-
-*Because apparently, regular attention mechanisms weren't complicated enough*
+# RWKVInside
 
 ## Overview
 
-Welcome to **RWKVInside** – a personal research repository dedicated to the noble art of converting traditional LLM attention mechanisms to RWKV architecture. Because why settle for vanilla attention when you can have something that sounds like a cryptocurrency ticker?
+RWKVInside is a research repository focused on deep investigation of attention mechanism conversion from traditional transformer architectures to RWKV-based systems. This project implements advanced techniques for transforming standard attention mechanisms while maintaining model performance and efficiency.
 
-This project represents a deep dive into attention conversion research, featuring the cutting-edge **cxa079** architecture specifically designed for attention transformation models. We've taken RWKV-7 and given it the treatment it truly deserves.
+## Architecture: cxa079
 
-## Features ✨
+This repository features the **cxa079** architecture, specifically designed for attention conversion models. The architecture is built upon RWKV-7 foundation with several key optimizations and enhancements.
+
+## Key Features
 
 ### Core Architecture
-- **RWKV-7 Foundation**: Built on the solid bedrock of RWKV-7, because if you're going to reinvent the wheel, might as well use the latest wheel specifications
-- **GroupNorm Elimination**: We've courageously removed GroupNorm – one less thing to worry about, right?
-- **Key Residual (k_first) Enhancement**: Added Key Residual connections because apparently regular residuals weren't residual enough
+- **RWKV-7 Base**: Utilizes RWKV-7 as the foundational architecture for attention conversion
+- **GroupNorm Removal**: Streamlined architecture with GroupNorm layers removed for improved efficiency
+- **Key Residual (K_FIRST)**: Enhanced with Key Residual connections to improve information flow
 
-### Query & Attention Systems
-- **Group Query Style**: Supports both Group Query and Multi-Head Attention (MHA) – because choice is the illusion of freedom
-- **Attention Freeze Support**: Sometimes you just want your attention to chill out and stop learning new tricks
+### Attention Mechanisms
+- **Group Query Style**: Supports both Group Query Attention and Multi-Head Attention (MHA) configurations
+- **Attention Freeze Support**: Enables selective freezing of attention parameters during training
 
-### Optimization & Efficiency
-- **LoRA Size Optimization**: We've optimized LoRA sizing because size does matter (in parameter efficiency)
-- **Bitsandbytes Quantization**: Supporting quantization for those who prefer their models lean and mean
-- **LoRA & Bone Compatibility**: Full support for both LoRA and Bone adapters – collect them all!
+### Optimization Features
+- **LoRA Size Optimization**: Optimized Low-Rank Adaptation (LoRA) parameter sizing for efficient fine-tuning
+- **Bitsandbytes Quantization**: Integrated quantization support for memory-efficient deployment
+- **LoRA & Bone Compatibility**: Full support for both LoRA and Bone adapter methodologies
 
 ### Training Capabilities
-- **Hybrid Simultaneous Learning**: Train multiple components at once because life's too short for sequential training
-- **Advanced Parameter Management**: Fine-grained control over what learns and what doesn't
-
-## Why RWKVInside? 🤔
-
-In a world saturated with transformer variants, we asked ourselves: "What if attention mechanisms could be... different?" And thus, RWKVInside was born – a testament to the beautiful complexity that emerges when you decide that standard attention just isn't quite attention-y enough.
- 
+- **Hybrid Simultaneous Learning**: Advanced training methodology supporting concurrent optimization of multiple model components
+- **Parameter-Specific Control**: Fine-grained control over parameter learning and freezing strategies
 
 ## Technical Specifications
 
-| Feature | Status | Notes |
-|---------|--------|-------|
-| RWKV-7 Base | ✅ | The foundation of our architectural masterpiece |
-| GroupNorm Removal | ✅ | Less is more, they say |
-| K_FIRST Residuals | ✅ | Keys deserve special treatment |
-| Group Query Style | ✅ | Because groups make everything better |
-| LoRA Optimization | ✅ | Size-optimized for your convenience |
-| Bitsandbytes | ✅ | Quantized to perfection |
-| Hybrid Training | ✅ | Why choose when you can have both? |
-| Attention Freeze | ✅ | For when attention needs a timeout |
+| Component | Implementation | Status |
+|-----------|---------------|---------|
+| Base Architecture | RWKV-7 | ✓ Implemented |
+| Normalization | GroupNorm Removed | ✓ Implemented |
+| Residual Connections | K_FIRST Key Residual | ✓ Implemented |
+| Attention Style | Group Query / MHA | ✓ Implemented |
+| Adapter Support | LoRA Optimized | ✓ Implemented |
+| Quantization | Bitsandbytes | ✓ Implemented |
+| Training Mode | Hybrid Simultaneous | ✓ Implemented |
+| Parameter Control | Attention Freeze | ✓ Implemented |
 
-## Research Notes
+ 
 
-This repository serves as a personal research playground for exploring the fascinating world of attention mechanism conversion. The **cxa079** architecture represents our attempt to bridge the gap between traditional transformer attention and RWKV's unique approach.
+## Research Objectives
 
-*Disclaimer: Results may include improved efficiency, reduced memory usage, or an inexplicable urge to convert more attention mechanisms.*
+This project aims to:
+
+1. **Investigate attention conversion methodologies** from transformer-based architectures to RWKV systems
+2. **Optimize parameter efficiency** through advanced adapter techniques and quantization
+3. **Develop hybrid training approaches** for simultaneous optimization of multiple model components
+4. **Evaluate performance characteristics** of converted attention mechanisms
+
+## Performance Considerations
+
+The cxa079 architecture incorporates several optimizations:
+
+- **Memory Efficiency**: Reduced memory footprint through GroupNorm removal and quantization
+- **Training Stability**: Enhanced gradient flow via Key Residual connections
+- **Computational Efficiency**: Optimized attention computation through Group Query mechanisms
+- **Flexibility**: Support for multiple adapter types and training configurations
+
+ 
 
 ## Contributing
 
-This is a personal research repository, but if you've somehow stumbled upon revolutionary improvements to attention conversion, we're all ears (or should we say, all attention?).
+This repository serves as a personal research project. Contributions, suggestions, and discussions regarding attention conversion methodologies are welcome through issues and pull requests.
 
 ## License
 
-MIT License - Because sharing is caring, even when it comes to attention mechanisms.
+Apache 2.0
 
-## Acknowledgments
-
-- The RWKV community, for making linear attention cool again
-- The transformer authors, for giving us something to convert from
-- Coffee, for making late-night attention research possible
-
----
-
-*"In attention we trust, in RWKV we convert."* – Ancient Research Proverb
+ 
 
 ## Contact
 
-For questions, suggestions, or existential crises about attention mechanisms, feel free to open an issue.
-
----
-
-**Disclaimer**: No attention mechanisms were harmed in the making of this repository. All conversions are performed with the utmost care and respect for the original attention patterns.
-
-
-2025 OpenMOSE
-Generated by Qwen3 14B-RWKV-7-cxa076. still hallucination often occurs
+For technical questions or research collaboration inquiries, please open an issue in this repository.
