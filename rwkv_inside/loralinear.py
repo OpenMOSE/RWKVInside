@@ -45,8 +45,8 @@ def rwkv_dequantize(quant_type, weight, qstate):
 def LinearForward(self,x,passthrough = False):
     if self.is_quant:
             if self.bonemode: # Covered All quantize method. currently slow implementation
-                with torch.no_grad():
-                    temporal_weight = rwkv_dequantize(self.quant_type, self.Qweight, self.qstate)
+                #with torch.no_grad():
+                temporal_weight = rwkv_dequantize(self.quant_type, self.Qweight, self.qstate)
 
                 if passthrough:
                     return F.linear(x, temporal_weight)
@@ -55,8 +55,8 @@ def LinearForward(self,x,passthrough = False):
                 return x @ (w + temporal_weight).t()
             
             else: #LoRA
-                with torch.no_grad():
-                    w = rwkv_dequantize(self.quant_type, self.Qweight, self.qstate)
+                #with torch.no_grad():
+                w = rwkv_dequantize(self.quant_type, self.Qweight, self.qstate)
                 if passthrough:
                     return F.linear(x, w)
                 
@@ -71,8 +71,8 @@ def LinearForward(self,x,passthrough = False):
 
                 if self.loramode:
                     #print('quant linear mode lora')
-                    with torch.no_grad():
-                        BaseOutput = F.linear(x, w)
+                    #with torch.no_grad():
+                    BaseOutput = F.linear(x, w)
                     
                     return ( 
                             BaseOutput + self.scaling *
@@ -179,11 +179,12 @@ class LoraLinear(nn.Module):
             print(f'quant type = {self.quant_type}')
             self.Qweight, self.qstate= rwkv_quantize(self.quant_type, self.weight.to(device=target_gpu))
             # weightをパラメータから削除
-            del self._parameters['weight'] 
+            # del self._parameters['weight'] 
             
-            # 属性も削除
-            if hasattr(self, 'weight'):
-                delattr(self, 'weight')
+            # # 属性も削除
+            # if hasattr(self, 'weight'):
+            #     delattr(self, 'weight')
+            del self.weight
 
             #print(f'{self.Qweight.shape}')
             

@@ -134,12 +134,13 @@ def create_arg_parser():
     parser.add_argument('--allow_quant_frozen_layers', type=int, default=1, help='allow quant frozen layers')
     parser.add_argument('--quant_mode', type=str, default="int8", help='quant in peft mode except full,  can choose int8,nf4,none')
     parser.add_argument('--peftmode', type=str, default="full", help='peftmode full,lora,bone')
-    parser.add_argument('--peft_r', type=int, default=64, help='peft block lora rank')
+    parser.add_argument('--peft_r', type=int, default=32, help='peft block lora rank')
     parser.add_argument('--peft_scaling', type=float, default=0.5, help='peft block lora scaling')
     parser.add_argument('--peft_dropout', type=float, default=0.01, help='peft block lora dropout')
 
-
-    parser.add_argument('--bnb_optimizer_mode', type=int, default=0, help='Use Bitsandbytes 8bit optimizer AdamW')
+    parser.add_argument('--mlp_quant_mode', type=str, default="nf4", help='MLP Quant mode int8,nf4')
+    parser.add_argument('--bnb_optimizer_mode', type=int, default=1, help='Use Bitsandbytes 8bit optimizer AdamW:1 LION:2')
+    #parser.add_argument('--deepspeed_lion_mode', type=int, default=0, help='Use Bitsandbytes 8bit optimizer AdamW')
     return parser
 
 def lr_schedule(args, step):
@@ -195,204 +196,6 @@ def on_train_batch_start(args, model_engine, global_step, epoch):
 
     return lr, wd_now
 
-# 一部のモジュールを量子化する
-def replace_with_bnb_linear4(model, module_names=None, threshold=6*1024):
-    for name, module in model.named_modules():
-        if module_names is not None and not any(mn in name for mn in module_names):
-            continue
-            
-        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
-            newmodule = bnb.nn.Linear4bit(
-                module.in_features, 
-                module.out_features, 
-                bias=module.bias is not None,
-                compute_dtype=torch.bfloat16
-            )
-            # 重みを変換
-            newmodule.weight = bnb.nn.Params4bit(
-                module.weight.data, 
-                requires_grad=False, 
-                quant_type="nf4"
-            )
-            if module.bias is not None:
-                newmodule.bias = module.bias
-            # モジュールを置き換え
-            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
-            parent = model if parent_name == '' else model.get_submodule(parent_name)
-            child_name = name.rsplit('.', 1)[1] if '.' in name else name
-            setattr(parent, child_name, newmodule)
-            
-    return model
-
-def replace_with_bnb_linear_(model, module_names=None, threshold=6*1024):
-    #return model
-    for name, module in model.named_modules():
-        if module_names is not None and not any(mn in name for mn in module_names):
-            continue
-            
-        if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
-            # 4ビットから8ビットに変更
-            newmodule = bnb.nn.Linear8bitLt(
-                module.in_features, 
-                module.out_features, 
-                bias=module.bias is not None,
-                has_fp16_weights=False,  # FP16重みを使用しない
-                threshold=6.0  # 量子化のしきい値
-            )
-            # 重みをコピー（8ビット用）
-            newmodule.weight.data = module.weight.data.clone()
-            
-            if module.bias is not None:
-                newmodule.bias = module.bias
-            # モジュールを置き換え
-            parent_name = name.rsplit('.', 1)[0] if '.' in name else ''
-            parent = model if parent_name == '' else model.get_submodule(parent_name)
-            child_name = name.rsplit('.', 1)[1] if '.' in name else name
-            setattr(parent, child_name, newmodule)
-            
-    return model
-
-# import torch
-# import torch
-# import torch.nn as nn
-# import torch.nn.functional as F
-# import bitsandbytes as bnb
-# from dataclasses import dataclass
-# from typing import Optional
-# import gc
-
-# @dataclass
-# class QuantizedState:
-#     """量子化された重みと状態を保持"""
-#     qweight: torch.Tensor  # 量子化された重み (int8)
-#     scales: torch.Tensor   # スケール
-#     zeros: Optional[torch.Tensor] = None  # ゼロポイント
-#     bias: Optional[torch.Tensor] = None   # バイアス
-#     shape: tuple = None    # 元の形状
-
-# class QuantizedLinearWrapper(nn.Module):
-#     """
-#     DeepSpeedから量子化状態を保護するカスタムLinear層
-#     """
-#     def __init__(self, in_features: int, out_features: int, bias: bool = True):
-#         super().__init__()
-#         self.in_features = in_features
-#         self.out_features = out_features
-        
-#         # ダミーパラメータ（DeepSpeedに認識させるため）
-#         self.dummy_weight = nn.Parameter(torch.zeros(1, dtype=torch.float16))
-        
-#         # 量子化状態はバッファとして保存
-#         self.register_buffer('qweight', None)
-#         self.register_buffer('scales', None)
-#         self.register_buffer('zeros', None)
-        
-#         if bias:
-#             self.bias = nn.Parameter(torch.zeros(out_features, dtype=torch.float16))
-#         else:
-#             self.register_parameter('bias', None)
-            
-#     def set_quantized_state(self, state: QuantizedState):
-#         """量子化された状態を設定"""
-#         self.qweight = state.qweight
-#         self.scales = state.scales
-#         if state.zeros is not None:
-#             self.zeros = state.zeros
-#         if state.bias is not None and self.bias is not None:
-#             self.bias.data = state.bias
-            
-#     def forward(self, x):
-#         """推論時に量子化された重みを使用"""
-#         # if self.training:
-#         #     # トレーニング中はダミー出力（このレイヤーは凍結されているはず）
-#         #     return torch.zeros(*x.shape[:-1], self.out_features, device=x.device, dtype=x.dtype)
-#         # else:
-#         # 推論時: 量子化された重みを使って計算
-#         # Int8をFP16に展開
-#         weight_fp16 = self.qweight.to(x.dtype) * self.scales
-        
-#         # 通常のlinear演算
-#         output = F.linear(x, weight_fp16.reshape(self.out_features, self.in_features), self.bias)
-#         return output
-
-# def quantize_linear_to_int8(linear_module, device):
-#     """
-#     Linear層を手動でInt8量子化
-#     """
-#     with torch.no_grad():
-#         # FP16の重みを取得
-#         w = linear_module.weight.data.to(torch.float16).to(device)
-        
-#         # 量子化のスケールを計算
-#         w_abs_max = w.abs().max()
-#         scales = w_abs_max / 127.0
-        
-#         # Int8に量子化
-#         qweight = torch.round(w / scales).clamp(-128, 127).to(torch.int8)
-        
-#         # 状態を作成
-#         state = QuantizedState(
-#             qweight=qweight.flatten(),  # フラット化して保存
-#             scales=scales,
-#             bias=linear_module.bias.data.clone() if linear_module.bias is not None else None,
-#             shape=w.shape
-#         )
-        
-#     return state
-
-# def quantize_and_replace_with_wrapper(model, patterns=['mlp'], threshold=0):
-#     """
-#     指定パターンのLinear層を量子化してカスタムラッパーに置き換え
-#     """
-#     device = next(model.parameters()).device
-#     modules_to_replace = []
-    
-#     # 置き換え対象を特定
-#     for name, module in model.named_modules():
-#         if any(pattern in name for pattern in patterns):
-#             if isinstance(module, nn.Linear) and module.weight.numel() > threshold:
-#                 modules_to_replace.append((name, module))
-#                 print(f"Will quantize and wrap: {name} (shape: {module.weight.shape})")
-    
-#     # 実際の置き換え
-#     for name, module in modules_to_replace:
-#         try:
-#             # 1. 手動で量子化
-#             quantized_state = quantize_linear_to_int8(module, device)
-            
-#             # 2. カスタムラッパーを作成
-#             wrapper = QuantizedLinearWrapper(
-#                 module.in_features,
-#                 module.out_features,
-#                 bias=module.bias is not None
-#             ).to(device)
-            
-#             # 3. 量子化状態を設定
-#             wrapper.set_quantized_state(quantized_state)
-            
-#             # 4. モジュールを置き換え
-#             parent_name = '.'.join(name.split('.')[:-1])
-#             child_name = name.split('.')[-1]
-            
-#             if parent_name:
-#                 parent = model
-#                 for part in parent_name.split('.'):
-#                     parent = getattr(parent, part)
-#             else:
-#                 parent = model
-                
-#             setattr(parent, child_name, wrapper)
-#             print(f"Successfully quantized: {name}")
-            
-#         except Exception as e:
-#             print(f"Error quantizing {name}: {e}")
-#             continue
-            
-#         # メモリクリーンアップ
-#         del module
-#         gc.collect()
-#         if torch.cuda.is_available():
-#             torch.cuda.empty_cache()
     
 #     return model
 from bnbwrapper import quantize_and_replace_with_wrapper, quantize_mlp_layers_properly
@@ -485,6 +288,55 @@ class TeacherAttnManager:
         self.layers = layers
         self.stored_teacher_attns = {}
         self.stored_vfirst_state = {}
+        self.stored_kfirst_state = {}
+        
+    @contextlib.contextmanager
+    def temporarily_remove_teacher_attn(self):
+        """
+        上下文管理器，临时移除所有层的teacher_attn,v_first_state并在退出时恢复
+        """
+        try:
+            # 保存并移除所有teacher_attn
+            for layer_idx in self.layers:
+                attention_wrapper = self.model_engine.module.model.model.layers[layer_idx].self_attn
+                if hasattr(attention_wrapper, 'teacher_attn'):
+                    self.stored_teacher_attns[layer_idx] = attention_wrapper.teacher_attn
+                    # 移除teacher_attn模块
+                    if hasattr(attention_wrapper, '_modules') and 'teacher_attn' in attention_wrapper._modules:
+                        del attention_wrapper._modules['teacher_attn']
+                    attention_wrapper.teacher_attn = None
+                if hasattr(attention_wrapper, 'v_first_state'):
+                    self.stored_vfirst_state[layer_idx] = attention_wrapper.v_first_state
+                    attention_wrapper.v_first_state = None
+                if hasattr(attention_wrapper, 'k_first_state'):
+                    self.stored_kfirst_state[layer_idx] = attention_wrapper.k_first_state
+                    attention_wrapper.k_first_state = None
+            
+            yield  # 允许在此上下文中执行代码
+            
+        finally:
+            # 恢复所有teacher_attn
+            for layer_idx, stored_attn in self.stored_teacher_attns.items():
+                attention_wrapper = self.model_engine.module.model.model.layers[layer_idx].self_attn
+                attention_wrapper.teacher_attn = stored_attn
+                # 重新注册为子模块
+                if hasattr(attention_wrapper, 'add_module') and not hasattr(attention_wrapper, 'teacher_attn'):
+                    attention_wrapper.add_module("teacher_attn", stored_attn)
+                v_first_state = self.stored_vfirst_state.get(layer_idx, None)
+                k_first_state = self.stored_kfirst_state.get(layer_idx, None)
+                if v_first_state is not None:
+                    attention_wrapper.v_first_state = v_first_state
+                if k_first_state is not None:
+                    attention_wrapper.k_first_state = k_first_state
+            # 清空存储的引用
+            self.stored_teacher_attns.clear()
+
+class TeacherAttnManager_:
+    def __init__(self, model_engine, layers: List[int]):
+        self.model_engine = model_engine
+        self.layers = layers
+        self.stored_teacher_attns = {}
+        self.stored_vfirst_state = {}
         
     @contextlib.contextmanager
     def temporarily_remove_teacher_attn(self):
@@ -520,6 +372,42 @@ class TeacherAttnManager:
                     attention_wrapper.v_first_state = v_first_state
             # 清空存储的引用
             self.stored_teacher_attns.clear()
+import ctypes
+def force_cpu_memory_cleanup():
+    """
+    CPUメモリを強制的にクリア
+    """
+    print("CPUメモリクリーンアップ開始...")
+    
+    # 1. PyTorchのガベージコレクション
+    gc.collect()
+    
+    # 2. PyTorchの内部キャッシュをクリア
+    torch.cuda.empty_cache()  # GPU側
+    
+    # 3. CPUメモリプールも解放を試行
+    if hasattr(torch, '_C') and hasattr(torch._C, '_cuda_emptyCache'):
+        torch._C._cuda_emptyCache()
+    
+    # 4. より積極的なガベージコレクション
+    for _ in range(3):
+        collected = gc.collect()
+        print(f"  GC回収: {collected} オブジェクト")
+    
+    # 5. 低レベルメモリ操作（Linux/Mac）
+    try:
+        libc = ctypes.CDLL("libc.so.6")  # Linux
+        libc.malloc_trim(0)
+        print("  malloc_trim実行完了")
+    except:
+        try:
+            libc = ctypes.CDLL("libc.dylib")  # Mac
+            libc.malloc_trim(0)
+            print("  malloc_trim実行完了")
+        except:
+            print("  malloc_trim未対応")
+    
+    print("CPUメモリクリーンアップ完了")
 if __name__ == '__main__':
     parser = create_arg_parser()
     args = parser.parse_args()
@@ -604,7 +492,8 @@ if __name__ == '__main__':
 
 
 
-    if args.bnb_optimizer_mode:
+    if args.bnb_optimizer_mode > 0:
+        args.deepspeed_stage = 1
         args.deepspeed_offload = False
 
     os.environ["RWKV_HEAD"] = str(int(args.n_embd // args.head_size_a))
@@ -617,7 +506,7 @@ if __name__ == '__main__':
     os.environ['RWKV_ATTN_PEFT_SCALING'] = str(args.peft_scaling)
     os.environ['RWKV_ATTN_PEFT_DROPOUT'] = str(args.peft_dropout)
 
-    from hybrid_model import HybridModel,VFirstHolder,remove_original_weights_for_lora_bone 
+    from hybrid_model import HybridModel,VFirstHolder,remove_original_weights_for_lora_bone ,KFirstHolder
 
     # 初始化混合模型
     #if args.stage == 1:
@@ -628,17 +517,25 @@ if __name__ == '__main__':
     for n,p in teacher_attn_module_list.named_parameters():
         p.requires_grad = False
     model = HybridModel(transformer_model, args, tokenizer)
-    #model = model.to(dtype=torch.bfloat16, device=DeviceID)
+    
     pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
-
+    
     #model = quantize_and_replace_with_wrapper(model, patterns=["mlp"], threshold=0)
     #teacher_attn_module_list = quantize_and_replace_with_wrapper(teacher_attn_module_list, patterns=["mlp"], threshold=0)
-    model = quantize_mlp_layers_properly(model)
+    model = quantize_mlp_layers_properly(model,args,device=DeviceID)
+
+    #model = model.to(dtype=torch.bfloat16,device=DeviceID)
+
+    force_cpu_memory_cleanup()
+
+    
 
     # model = model.to(device=DeviceID)
 
     for name,param in model.named_parameters():
-        print(f'name = {name} {param.dtype} {param.device}')
+        #if 'mlp' in name:
+            print(f'name = {name} {param.dtype} {param.device}')
+    #exit()
     gc.collect()
     torch.cuda.empty_cache()
 
@@ -948,7 +845,7 @@ if __name__ == '__main__':
         #          print(f'{key} {value.dtype}')
 
         for key in state_dict.keys():
-            if not any(excluded in key for excluded in ["embed", "lm_head", ".norm.","mlp"]):
+            if not any(excluded in key for excluded in ["embed", "lm_head", ".norm.","mlp.weight","qweight",'scales']):
                 # この時点でのみCPUメモリにロード
                 value = state_dict[key]
                 filtered_state_dict[key] = value.to(dtype=torch.bfloat16)
@@ -969,7 +866,8 @@ if __name__ == '__main__':
 
         del checkpoint
         del filtered_state_dict
-        gc.collect
+        del state_dict
+        gc.collect()
 
         if args.grad_cp == 1:
             print('enable gradient checkpointing')
@@ -978,6 +876,7 @@ if __name__ == '__main__':
 
         
         for name, param in model.named_parameters():
+            #print(name)
             Attention = 0
             for i in range(args.n_layer):
                 t = f'layers.{i}.'
@@ -993,18 +892,20 @@ if __name__ == '__main__':
             elif Attention==1 and args.freeze_hybrid_attention and ('self_attn.student_attn' in name and ('q_proj' in name or 'k_proj' in name or 'v_proj' in name or 'o_proj' in name or 'q_norm' in name or 'k_norm' in name)):
                 param.requires_grad = False
                 print(f'{name} Frozen')
-            elif args.freeze_mlp and 'mlp' in name:
+            elif args.freeze_mlp and 'mlp' in name and 'lora' not in name:
                 param.requires_grad = False
                 print(f'{name} Frozen')
             else:
                 param.requires_grad = True
+                print(f'{name} will Train')
+        #exit()
         for name, param in model.named_parameters():
-            # if 'emb' in name or 'lm_head' in name or '.norm.' in name:
-            #     param.requires_grad = False
-            #     print(f'frozen {name}')
             if   'lm_head' in name or '.norm.' in name:
                 param.requires_grad = False
                 print(f'frozen {name}')
+            # if   'emb' in name:
+            #     param.requires_grad = False
+            #     print(f'frozen {name}')
 
         lora_base_modules = set()
         if args.peftmode != 'full':
@@ -1171,14 +1072,14 @@ if __name__ == '__main__':
                         
                         "offload_optimizer": {
                             "device": "cpu",
-                            "pin_memory": True,
+                            "pin_memory": False,
                             "buffer_count": 1,
                             'ratio':1.0
                         },
                      
                         "allgather_partitions": True,
                         "sub_group_size": 1e7,
-                        "overlap_comm": True,
+                        "overlap_comm": False,
                         "reduce_scatter": True,
                         "reduce_bucket_size": 1e6,
                         "contiguous_gradients": False
@@ -1268,6 +1169,8 @@ if __name__ == '__main__':
         for name, m in model.named_parameters():
             print(f'{name} requires_grad = {m.requires_grad}')
 
+        
+
 
         if args.quant_mode != 'none':
             model = remove_original_weights_for_lora_bone(model)
@@ -1275,7 +1178,7 @@ if __name__ == '__main__':
 
 
 
-
+        model=model.to(device=DeviceID)
         optimizer = configure_optimizer_stage2(model, args)
         #exit()
         if args.local_rank == 0:
@@ -1298,9 +1201,13 @@ if __name__ == '__main__':
             config=ds_config
         )
         del model
+        del transformer_model
+        del optimizer
+        del teacher_attn_module_list
         gc.collect()
         torch.cuda.empty_cache()
-
+        
+        #print('sleep')
         #time.sleep(30)
         #exit()
         
@@ -1322,75 +1229,23 @@ if __name__ == '__main__':
 
 
 
-        vfirst_holder = VFirstHolder(args.micro_bsz, args.max_seq_length, args.dim_att,device=DeviceID)
+        vfirst_holder = VFirstHolder(args.micro_bsz, args.max_seq_length,args.num_key_value_heads,args.head_size_a,device=DeviceID)
         vfirst_holder.requires_grad_(False)
+
+        kfirst_holder = KFirstHolder(args.micro_bsz, args.max_seq_length,args.num_key_value_heads,args.head_size_a,device=DeviceID)
+        kfirst_holder.requires_grad_(False)
 
         #if cxa079 is no need v_first
         # vfirst_holder = VFirstHolder(args.micro_bsz, 1, args.dim_att,device=DeviceID)
         # vfirst_holder.requires_grad_(False)
 
 
-
-        # if args.deepspeed_stage == 3:
-        #     ds_config_state = {
-        #         "train_batch_size": args.train_batch_size,
-        #         "bf16": {"enabled": True},
-        #         "zero_optimization": {
-        #             "stage": args.deepspeed_stage,
-        #             # 减小缓冲区大小
-        #             "stage3_prefetch_bucket_size": 5e5,  # 更小的预取缓冲区
-        #             "stage3_param_persistence_threshold": 1e3,  # 更小的参数持久化阈值
-        #             "reduce_bucket_size": 5e5,  # 更小的归约缓冲区
-                    
-        #             # 最小化内存使用
-        #             "memory_efficient_linear": True,
-        #             "contiguous_gradients": True,
-                    
-        #             # # 如果需要 CPU offload，使用最小配置
-        #             "offload_param": {
-        #                 "device": "cpu",
-        #                 "pin_memory": True,
-        #                 "buffer_count": 2,  # 减少缓冲区数量
-        #                 "buffer_size": 1e6,  # 更小的缓冲区大小
-        #             },
-                    
-        #             # 简化通信设置
-        #             "allgather_partitions": True,
-        #             "reduce_scatter": True,
-        #             "overlap_comm": True,
-        #         },
-        #         # 禁用不必要的功能
-        #         "wall_clock_breakdown": False,
-        #         "dump_state": False,
-                
-        #         # 如果状态不需要梯度，可以禁用相关优化
-        #         "optimizer": None if args.deepspeed_stage == 3 else {
-        #                 "type": "AdamW",
-        #                 "params": {
-        #                     "lr": args.learning_rate,
-        #                     "betas": [0.9, 0.999],
-        #                     "eps": 1e-8,
-        #                     "weight_decay": 0.01
-        #                 }
-        #             },
-        #         "scheduler": None,
-        #     }
-        #     state_engine, _, _, _ = deepspeed.initialize(
-        #         model=vfirst_holder,
-        #         config=ds_config
-        #     )
-        #     print(f'Zero 3 will potentially split different layers to different processes')
-        #     for layer_idx in args.layers:
-        #         attn_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
-        #         attn_wrapper.v_first_state = state_engine.module
-        #         attn_wrapper.global_rank = model_engine.global_rank
-        #     del vfirst_holder
-        # else:
         #Zero 2 will hold the model in one GPU process
         print(f'Zero 2 will hold the model in one GPU process,set the vfirst_holder to model_engine')
         for layer_idx in args.layers:
             attn_wrapper = model_engine.module.model.model.layers[layer_idx].self_attn
             attn_wrapper.v_first_state = vfirst_holder
+            attn_wrapper.k_first_state = kfirst_holder
         timer.initialize_with_engine(model_engine)
         #print current gpu memory
         if args.local_rank == 0:
@@ -1399,63 +1254,12 @@ if __name__ == '__main__':
             if args.local_rank == 0:
                 print(f'initializing teacher model')
                 print(f'current gpu memory BEFORE initializing teacher model: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
-            # ds_config = {
-            #     "distributed_backend": "rccl",
-            #     "train_batch_size": args.train_batch_size,
-            #     "bf16": {
-            #         "enabled": True
-            #     },
-            #     # 'weight_quantization': {
-            #     #     'quantized_initialization': {
-            #     #         'num_bits': 8,
-            #     #         'group_size': 64,
-            #     #         'group_dim': 1,
-            #     #         'symmetric': False
-            #     #     },
-            #     # },
-            #     "zero_optimization": {
-            #         "stage": 0,#args.deepspeed_stage,
-            #         # "stage3_max_live_parameters": 1e6,
-            #         # "stage3_max_reuse_distance": 1e6,
-            #         # "stage3_prefetch_bucket_size": 2e6,
-            #         # "memory_efficient_linear": True,
-            #         # "stage3_param_persistence_threshold": 1e5,
-            #         # "offload_param": {
-            #         #     "device": "cpu",
-            #         #     "pin_memory": True,
-            #         #     "buffer_count": 4,
-            #         #     "buffer_size": 1e8
-            #         # },
-            #         "allgather_partitions": True,
-            #         "reduce_scatter": True,
-            #         "reduce_bucket_size": 5e6,
-            #         "overlap_comm": True,
-            #         "contiguous_gradients": True
-            #     },
-            #     # "zero_force_ds_cpu_initialization": True,
-            #     # "dump_state": True
-            # }
-            # if not args.deepspeed_offload:
-            #     ds_config['zero_optimization']['offload_param'] = None
+     
             teacher_model_id = args.teacher_model_id
             if teacher_model_id is None:
                 teacher_model_id = config['Llama']['model_id']
             print(f'initializing teacher model with id {teacher_model_id}')
 
-            # quantization_config = BitsAndBytesConfig(
-            #     load_in_4bit=True,
-            #     bnb_4bit_compute_dtype=torch.float16,
-            #     bnb_4bit_quant_type="nf4",
-            #     bnb_4bit_use_double_quant=True
-            # )
-            # teacher_model = AutoModelForCausalLM.from_pretrained(
-            #     teacher_model_id,
-            #     #quantization_config=quantization_config,
-            #     torch_dtype=dtype,
-            #     device_map=DeviceID,
-            #     low_cpu_mem_usage=True,
-            #     attn_implementation="sdpa"
-            # )
             # Int8量子化設定
             quantization_config = BitsAndBytesConfig(
                 load_in_8bit=True,  # 4bitではなく8bitに変更
@@ -1483,39 +1287,7 @@ if __name__ == '__main__':
                 param.requires_grad = False
 
             teacher_engine = teacher_model
-            #使用DeepSpeed包装teacher model
-            # teacher_engine, _, _, _ = deepspeed.initialize(
-            #     model=teacher_model,
-            #     config=ds_config
-            # )
-            # from deepspeed.inference.config import QuantizationConfi
-            # g
-            # quant_config = QuantizationConfig(
-            #     enabled=True,
-            #     weight={
-            #         "enabled": True,
-            #         "num_bits": 8,
-            #         "q_type": "symmetric",
-            #         "q_groups": 64,  # 通常は64 or 128
-            #         "quantized_initialization": {},  # 通常は空でOK
-            #         "post_init_quant": {}
-            #     },
-            #     activation={
-            #         "enabled": False  # 推論にactivation quant不要ならFalseで軽量化
-            #     },
-            #     qkv={
-            #         "enabled": True
-            #     }
-            # )
-
-
-            # teacher_engine = deepspeed.init_inference(
-            #     model=teacher_model,
-            #     mp_size=1,
-            #     dtype=torch.bfloat16,
-            #     replace_with_kernel_inject=True,
-            #     quant=quant_config
-            # )
+      
             if args.local_rank == 0:
                 print(f'current gpu memory AFTER initializing teacher model: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
                 # 将处理好的teacher model设置到model_engine中

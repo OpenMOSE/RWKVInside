@@ -4,6 +4,7 @@
 # import torch.nn as nn
 # import torch.nn.functional as F
 import bitsandbytes as bnb
+from loralinear import LoraLinear
 # from dataclasses import dataclass
 # from typing import Optional
 # import gc
@@ -347,7 +348,199 @@ def replace_linear_with_8bit(module, threshold=6.0, has_fp16_weights=False,devic
     
     return new_module
 
-def quantize_mlp_layers_properly(model, threshold=6.0,device=None):
+
+def replace_linear(module,args,device='cuda:0'):
+    print('Replace Linear Layer')
+    new_module = LoraLinear(module.in_features,
+                            module.out_features,
+                            bias=module.bias is not None,
+                            peftmode = 'lora'
+                            ).to(device=device, dtype=torch.bfloat16)
+    
+    new_module.weight.data = module.weight.data
+    if module.bias is not None:
+        new_module.bias.data = module.bias.data
+
+    new_module.quant(args.mlp_quant_mode, device)
+
+    return new_module
+def replace_module_correctly_(model, layer_name, new_module):
+    """
+    メモリリーク対策付きのモジュール置き換え関数
+    """
+    print(f"置き換え対象: {layer_name}")
+    
+    # layer_name から情報を抽出
+    parts = layer_name.split('.')
+    layer_idx = None
+    module_name = None
+    
+    for i, part in enumerate(parts):
+        if part == 'layers' and i + 1 < len(parts) and parts[i + 1].isdigit():
+            layer_idx = int(parts[i + 1])
+            if i + 2 < len(parts) and parts[i + 2] == 'mlp' and i + 3 < len(parts):
+                module_name = parts[i + 3]
+            break
+    
+    if layer_idx is None or module_name is None:
+        raise ValueError(f"レイヤー情報を抽出できませんでした: {layer_name}")
+    
+    print(f"  Layer index: {layer_idx}, Module: {module_name}")
+    
+    old_module = None
+    try:
+        # 置き換え前のメモリ使用量を取得
+        initial_memory = get_memory_usage() if 'get_memory_usage' in globals() else None
+        
+        # 確実にアクセス
+        target_layer = model.model.layers[layer_idx]
+        target_mlp = target_layer.mlp
+        
+        # 元のモジュールを取得（参照を保存）
+        old_module = getattr(target_mlp, module_name)
+        print(f"  元のモジュール: {type(old_module)}")
+        
+        # 古いモジュールをCPUに移動（GPUメモリ解放）
+        if hasattr(old_module, 'cpu'):
+            old_module.cpu()
+        
+        # 置き換え実行
+        setattr(target_mlp, module_name, new_module)
+        print(f"  置き換え完了: Layer {layer_idx}.mlp.{module_name}")
+        
+        # 確認
+        replaced_module = getattr(target_mlp, module_name)
+        print(f"  新しいモジュール: {type(replaced_module)}")
+        
+    except Exception as e:
+        print(f"置き換えエラー: {e}")
+        raise
+    
+    finally:
+        # 確実にクリーンアップ
+        cleanup_old_module(old_module, layer_name)
+        
+        # メモリ使用量の変化を確認
+        if initial_memory:
+            final_memory = get_memory_usage()
+            memory_change = final_memory - initial_memory
+            print(f"  メモリ変化: {memory_change:+.1f} MB")
+import psutil
+import os
+def get_memory_usage():
+    """
+    現在のプロセスのメモリ使用量をMB単位で取得
+    
+    Returns:
+        float: メモリ使用量（MB）
+    """
+    try:
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        return memory_info.rss / 1024 / 1024  # バイト -> MB
+    except Exception as e:
+        print(f"メモリ使用量取得エラー: {e}")
+        return 0.0
+
+def cleanup_old_module(old_module, layer_name):
+    """
+    古いモジュールの完全なクリーンアップ
+    """
+    if old_module is None:
+        return
+    
+    try:
+        print(f"  古いモジュールをクリーンアップ中: {layer_name}")
+        
+        # 1. モジュールをCPUに移動（まだの場合）
+        if hasattr(old_module, 'cpu'):
+            old_module.cpu()
+        
+        # 2. モジュール内のパラメータを明示的に削除
+        if hasattr(old_module, 'parameters'):
+            for param in old_module.parameters():
+                if param is not None:
+                    del param
+        
+        # 3. モジュール内のバッファを削除
+        if hasattr(old_module, 'buffers'):
+            for buffer in old_module.buffers():
+                if buffer is not None:
+                    del buffer
+        
+        # 4. 子モジュールを削除
+        if hasattr(old_module, 'children'):
+            for child in old_module.children():
+                if child is not None:
+                    del child
+        
+        # 5. 主要な参照を削除
+        del old_module
+        
+        # 6. PyTorchキャッシュをクリア
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # 7. ガベージコレクションを強制実行
+        collected = gc.collect()
+        print(f"    ガベージコレクション: {collected} オブジェクト回収")
+        
+    except Exception as e:
+        print(f"  クリーンアップエラー: {e}")
+def replace_module_correctly(model, layer_name, new_module):
+    """
+    確実に動作するモジュール置き換え関数
+    """
+    print(f"置き換え対象: {layer_name}")
+    
+    # layer_name から情報を抽出
+    # 例: 'model.model.layers.35.mlp.down_proj'
+    parts = layer_name.split('.')
+    
+    # レイヤー番号とモジュール名を抽出
+    layer_idx = None
+    module_name = None
+    
+    for i, part in enumerate(parts):
+        if part == 'layers' and i + 1 < len(parts) and parts[i + 1].isdigit():
+            layer_idx = int(parts[i + 1])
+            # 'mlp.down_proj' の部分を取得
+            if i + 2 < len(parts) and parts[i + 2] == 'mlp' and i + 3 < len(parts):
+                module_name = parts[i + 3]  # 'down_proj', 'up_proj', etc.
+            break
+    
+    if layer_idx is None or module_name is None:
+        raise ValueError(f"レイヤー情報を抽出できませんでした: {layer_name}")
+    
+    print(f"  Layer index: {layer_idx}, Module: {module_name}")
+    
+    try:
+        # 確実にアクセス
+        target_layer = model.model.layers[layer_idx]
+        target_mlp = target_layer.mlp
+        
+        # 元のモジュールを確認
+        old_module = getattr(target_mlp, module_name)
+        print(f"  元のモジュール: {type(old_module)}")
+        
+        # 置き換え実行
+        setattr(target_mlp, module_name, new_module)
+        print(f"  置き換え完了: Layer {layer_idx}.mlp.{module_name}")
+        
+        # 確認
+        replaced_module = getattr(target_mlp, module_name)
+        print(f"  新しいモジュール: {type(replaced_module)}")
+        
+    except Exception as e:
+        print(f"置き換えエラー: {e}")
+        print(f"デバッグ情報:")
+        print(f"  model type: {type(model)}")
+        print(f"  has model attr: {hasattr(model, 'model')}")
+        if hasattr(model, 'model'):
+            print(f"  model.model type: {type(model.model)}")
+            print(f"  has layers attr: {hasattr(model.model, 'layers')}")
+        raise
+def quantize_mlp_layers_properly(model,args,threshold=6.0,device='cuda:0'):
     """
     LLaMA/Mistral系モデルのMLP層を正しく8ビット量子化
     """
@@ -360,10 +553,10 @@ def quantize_mlp_layers_properly(model, threshold=6.0,device=None):
             'mlp.gate_proj',  # ゲート投影層
             'mlp.down_proj',  # ダウン投影層
             'mlp.up_proj',    # アップ投影層
-            # 他のモデル構造も対応
-            'mlp.c_fc', 'mlp.c_proj',  # GPT-2
-            'mlp.fc_in', 'mlp.fc_out',  # GPT-Neo
-            'mlp.dense_h_to_4h', 'mlp.dense_4h_to_h'  # GPT-J
+            # # 他のモデル構造も対応
+            # 'mlp.c_fc', 'mlp.c_proj',  # GPT-2
+            # 'mlp.fc_in', 'mlp.fc_out',  # GPT-Neo
+            # 'mlp.dense_h_to_4h', 'mlp.dense_4h_to_h'  # GPT-J
         ])
         
         if is_mlp and isinstance(module, nn.Linear):
@@ -374,25 +567,54 @@ def quantize_mlp_layers_properly(model, threshold=6.0,device=None):
     # 各層を順番に量子化
     for layer_name in layers_to_quantize:
         # モジュールのパスを分解
-        parts = layer_name.split('.')
-        parent = model
+        # parts = layer_name.split('.')
+        # parent = model
         
-        # 親モジュールを取得
-        for part in parts[:-1]:
-            parent = getattr(parent, part)
+        # # 親モジュールを取得
+        # for part in parts[:-1]:
+        #     parent = getattr(parent, part)
         
-        # 現在のモジュールを取得
-        old_module = getattr(parent, parts[-1])
+        # # 現在のモジュールを取得
+        # old_module = getattr(parent, parts[-1])
+        targetname = layer_name#"model." + layer_name.replace('model.', '')
+        print(f'taget = {targetname}')
+
+        old_module = model.get_submodule(targetname)
+        print(f"元のモジュール: {old_module}")
+        
         
         # 8bitモジュールに置き換え
         print(f"量子化中: {layer_name}")
-        new_module = replace_linear_with_8bit(old_module, threshold=threshold,device=device)
+        new_module = replace_linear(old_module,args,device=device)
+
+        old_module = None
+
+        # # 6. 元のモジュールに上書き
+        # # パスを分析して親モジュールと属性名を取得
+        # path_parts = layer_name.split('.')#.replace('model.', '').split('.')
+        # parent_module = model#.model
         
+        # # 親モジュールまで辿る
+        # for part in path_parts[:-1]:
+        #     if part.isdigit():
+        #         parent_module = parent_module[int(part)]
+        #     else:
+        #         parent_module = getattr(parent_module, part)
+        
+        # 最後の属性（モジュール名）を置き換え
+        #final_attr = path_parts[-1]
+        #setattr(parent_module, final_attr, new_module)
+        #TargetName =layer_name.replace('model.model.','model.')
+        #setattr(model,TargetName,new_module)
+        replace_module_correctly(model.model,layer_name,new_module)
+        
+        print(f"モジュールを置き換えました: {layer_name}")
+        #setattr(model, parts[-1], new_module)
         # モジュールを置き換え
-        setattr(parent, parts[-1], new_module)
+        #setattr(parent, parts[-1], new_module)
         
         # 元のモジュールを削除してメモリを解放
-        del old_module
-        torch.cuda.empty_cache()
+        #del old_module
+        #torch.cuda.empty_cache()
     
     return model

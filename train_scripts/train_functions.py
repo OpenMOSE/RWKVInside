@@ -12,7 +12,7 @@ from deepspeed.ops.lion import DeepSpeedCPULion, FusedLion
 from profiler import time_function
 import gc
 
-from bitsandbytes.optim import Adam8bit,AdamW8bit
+from bitsandbytes.optim import Adam8bit,AdamW8bit,Lion8bit
 
 def rank0_print(*args, **kwargs):
     if deepspeed.comm.get_rank() == 0:
@@ -59,14 +59,14 @@ def train_step(model, batch, args, teacher_engine=None, tokenizer=None):
     # 5. 非SFT模式的处理
     if args.stage == 2:
         teacher_logits, teacher_loss = get_teacher_outputs(teacher_engine, input_ids, attention_mask, labels, args)
-        #gc.collect()
-        #torch.cuda.empty_cache()
+        gc.collect()
+        torch.cuda.empty_cache()
         student_outputs = get_student_outputs(
             model, args, input_ids, labels, attention_mask)
         
         #compute_kl_loss_ultra_efficient
         loss, kl_loss, student_ce_loss = compute_kl_loss_ultra_efficient(
-            student_outputs, teacher_logits, labels, args,attention_mask=attention_mask)
+            student_outputs, teacher_logits, labels, args,attention_mask=attention_mask,temperature=2.0)
         # loss, kl_loss, student_ce_loss = compute_kl_loss(
         #     student_outputs, teacher_logits, labels, args,attention_mask=attention_mask)
 
@@ -313,10 +313,10 @@ def configure_optimizer_stage2(model, args):
     
     if args.layerwise_lr > 0:
         optim_groups = [
-                {"params": [param_dict[n] for n in lr_0x], "weight_decay": 0.0, "my_lr_scale": 0.0},
                 {"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0},
                 {"params": [param_dict[n] for n in lr_2x], "weight_decay": 0.0, "my_lr_scale": 2.0},
                 {"params": [param_dict[n] for n in lr_3x], "weight_decay": 0.0, "my_lr_scale": 3.0},
+                {"params": [param_dict[n] for n in lr_0x], "weight_decay": 0.0, "my_lr_scale": 0.0},
             ]
     else:
         optim_groups = [{"params": [param_dict[n] for n in lr_1x], "weight_decay": 0.0, "my_lr_scale": 1.0}]
@@ -394,8 +394,10 @@ def configure_optimizer(model, args):
         if args.deepspeed_offload:
             optimizer = DeepSpeedCPUAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adamw_mode=True, amsgrad=False)
         else:
-            if args.bnb_optimizer_mode:
+            if args.bnb_optimizer_mode == 1:
                 optimizer =  AdamW8bit(optim_groups,  betas=args.betas, eps=args.adam_eps)
+            elif args.bnb_optimizer_mode == 2:
+                optimizer =  Lion8bit(optim_groups,  betas=args.betas)
             else:
                 optimizer = FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
     else:
