@@ -129,7 +129,7 @@ def create_arg_parser():
 
     parser.add_argument('--freeze_attention', type=int, default=0, help='Freeze Receptance,Key,Value')
     parser.add_argument('--use_bitsandbytes', type=int, default=0, help='apply 8bitlinear with bitsandbytes')
-    parser.add_argument('--hybrid_attention_layers', type=int, default=0, help='Hybrid Attention Layers')
+    parser.add_argument('--hybrid_attention_layers', type=int, default=8, help='Hybrid Attention Layers')
     parser.add_argument('--freeze_hybrid_attention', type=int, default=0, help='Freeze Hybrid Attention q,k,v')
     parser.add_argument('--allow_quant_frozen_layers', type=int, default=1, help='allow quant frozen layers')
     parser.add_argument('--quant_mode', type=str, default="int8", help='quant in peft mode except full,  can choose int8,nf4,none')
@@ -138,7 +138,7 @@ def create_arg_parser():
     parser.add_argument('--peft_scaling', type=float, default=0.5, help='peft block lora scaling')
     parser.add_argument('--peft_dropout', type=float, default=0.01, help='peft block lora dropout')
 
-    parser.add_argument('--mlp_quant_mode', type=str, default="nf4", help='MLP Quant mode int8,nf4')
+    parser.add_argument('--mlp_quant_mode', type=str, default="int8", help='MLP Quant mode int8,nf4')
     parser.add_argument('--bnb_optimizer_mode', type=int, default=1, help='Use Bitsandbytes 8bit optimizer AdamW:1 LION:2')
     #parser.add_argument('--deepspeed_lion_mode', type=int, default=0, help='Use Bitsandbytes 8bit optimizer AdamW')
     return parser
@@ -438,21 +438,19 @@ if __name__ == '__main__':
                                                              torch_dtype=dtype, device_map='cpu',low_cpu_mem_usage=True,attn_implementation="sdpa")
     
 
-    # if args.local_rank == 0:
-    #     transformer_model = AutoModelForCausalLM.from_pretrained(
-    #         config['Llama']['model_id'],
-    #         torch_dtype=dtype, 
-    #         device_map='cpu',
-    #         low_cpu_mem_usage=True
-    #     )
-    # else:
-    #     # 他のrankではメタデータのみロード
-    #     from transformers import AutoConfig
-    #     config_model = AutoConfig.from_pretrained(config['Llama']['model_id'])
-    #     transformer_model = AutoModelForCausalLM.from_config(
-    #         config_model,
-    #         torch_dtype=dtype
-    #     )
+    args.freeze_attention = config['freeze_attention']
+    args.hybrid_attention_layers = config['hybrid_attention_layers']
+    args.freeze_hybrid_attention = config['freeze_hybrid_attention']
+    args.allow_quant_frozen_layers = config['allow_quant_frozen_layers']
+    args.quant_mode = config['quant_mode']
+    args.peftmode = config['peftmode']
+    args.peft_r = config['peft_r']
+    args.peft_scaling = config['peft_scaling']
+    args.peft_dropout = config['peft_dropout']
+    args.mlp_quant_mode = config['mlp_quant_mode']
+    args.bnb_optimizer_mode = config['bnb_optimizer_mode']
+    args.transformer_layers = config['RWKV']['transformer_layers']
+    
     tokenizer = AutoTokenizer.from_pretrained(config['Llama']['model_id'])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -880,11 +878,11 @@ if __name__ == '__main__':
             Attention = 0
             for i in range(args.n_layer):
                 t = f'layers.{i}.'
-                if t in name and i < args.n_layer - args.hybrid_attention_layers:
-                    Attention = 0
+                if t in name and i in args.transformer_layers:
+                    Attention = 1
                     break
                 elif t in name:
-                    Attention = 1
+                    Attention = 0
                     break
             if Attention == 0 and args.freeze_attention and ('receptance' in name or 'key' in name or 'value' in name):
                 param.requires_grad = False
@@ -1145,11 +1143,11 @@ if __name__ == '__main__':
                 Attention = 0
                 for i in range(args.n_layer):
                     t = f'layers.{i}.'
-                    if t in name and i < args.n_layer - args.hybrid_attention_layers:
-                        Attention = 0
+                    if t in name and i in args.transformer_layers:
+                        Attention = 1
                         break
                     elif t in name:
-                        Attention = 1
+                        Attention = 0
                         break
                 #print(f'{name} {param.dtype}')
                 if Attention == 0 and args.freeze_attention and ('self_attn.student_attn' in name and ('receptance' in name or 'key' in name or 'value' in name)):

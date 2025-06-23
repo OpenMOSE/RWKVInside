@@ -793,10 +793,10 @@ class GQAWithRopeAttention(nn.Module):
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         #cos, sin = position_embeddings
-        cos, sin, inv_freq_own = compute_qwen3_rope_cache(T, self.head_size, key_states.device, torch.float32, self.rope_theta)
-        cos=cos.to(dtype=torch.bfloat16)
-        sin=sin.to(dtype=torch.bfloat16)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        # cos, sin, inv_freq_own = compute_qwen3_rope_cache(T, self.head_size, key_states.device, torch.float32, self.rope_theta)
+        # cos=cos.to(dtype=torch.bfloat16)
+        # sin=sin.to(dtype=torch.bfloat16)
+        # query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         # if past_key_value is not None:
         #     # sin and cos are specific to RoPE models; cache_position needed for the static cache

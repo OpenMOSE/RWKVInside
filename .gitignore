@@ -2,6 +2,7 @@ hf_model_weights.pth
 
 
 *.pyc
+*.Identifier
 configs/*/*.safetensors*
 .vscode/launch.json
 wandb/

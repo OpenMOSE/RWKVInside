@@ -66,7 +66,7 @@ def train_step(model, batch, args, teacher_engine=None, tokenizer=None):
         
         #compute_kl_loss_ultra_efficient
         loss, kl_loss, student_ce_loss = compute_kl_loss_ultra_efficient(
-            student_outputs, teacher_logits, labels, args,attention_mask=attention_mask,temperature=2.0)
+            student_outputs, teacher_logits, labels, args,attention_mask=attention_mask,temperature=1.0)
         # loss, kl_loss, student_ce_loss = compute_kl_loss(
         #     student_outputs, teacher_logits, labels, args,attention_mask=attention_mask)
 

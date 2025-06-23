@@ -349,12 +349,12 @@ def replace_linear_with_8bit(module, threshold=6.0, has_fp16_weights=False,devic
     return new_module
 
 
-def replace_linear(module,args,device='cuda:0'):
+def replace_linear(module,args,device='cuda:0'): 
     print('Replace Linear Layer')
     new_module = LoraLinear(module.in_features,
                             module.out_features,
                             bias=module.bias is not None,
-                            peftmode = 'lora'
+                            peftmode = 'frozen'
                             ).to(device=device, dtype=torch.bfloat16)
     
     new_module.weight.data = module.weight.data

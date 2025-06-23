@@ -459,11 +459,17 @@ class HybridModel(nn.Module):
 
         for layer_idx in range(transformer_model.config.num_hidden_layers):
             if layer_idx in rwkv_args.layers:
-
-                if layer_idx < (transformer_model.config.num_hidden_layers - self.args.hybrid_attention_layers):
-                    student_attn = TimeMixer(rwkv_args, layer_idx)
-                else:
+                if layer_idx in self.args.transformer_layers:
+                    print(f'layer:{layer_idx} Attention Layer')
                     student_attn = SelfAttention(rwkv_args, layer_idx)
+                else:
+                    print(f'layer:{layer_idx} RWKV Layer')
+                    student_attn = TimeMixer(rwkv_args, layer_idx)
+
+                # if layer_idx < (transformer_model.config.num_hidden_layers - self.args.hybrid_attention_layers):
+                #     student_attn = TimeMixer(rwkv_args, layer_idx)
+                # else:
+                    
 
 
 
@@ -471,6 +477,8 @@ class HybridModel(nn.Module):
                 attn_wrapper = AttentionWrapper(student_attn,layer_idx,rwkv_args)
                 llama_layer.self_attn = attn_wrapper
                 gc.collect()
+
+        #exit()
         self.model = transformer_model
         self.add_module("model", self.model)
 
