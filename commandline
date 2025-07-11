@@ -695,3 +695,48 @@ python ./train_scripts/save_checkpoint.py /home/client/Projects/output/Qwen3-8B/
 
 Experiment HXA079 
 sh train2_ds2.sh -c configs/qwen3_8b_hybrid_l6.yaml -l 0.00001 -f 0.000001 -m 2048 -b 2 -a 6 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/hxa079-stage2-pls" -k "/home/client/Projects/output/Qwen3-8B/cxa079-stage2p2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'hxa079-hybrid-stage2' -N 1
+
+
+
+
+
+
+Experiment HXA079 
+sh train2_ds2.sh -c configs/qwen3_8b_hybrid_l6.yaml -l 0.00001 -f 0.000001 -m 2048 -b 2 -a 6 -r "/home/client/Projects/OpenMOSE_Gen3/Final" -o "/home/client/Projects/output/Qwen3-8B/hxa079-stage2-pls" -k "/home/client/Projects/output/Qwen3-8B/cxa079-stage2p2/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 2 -z 1 -P 'hxa079-hybrid-stage2' -N 1
+
+
+
+
+
+MI300 Experiment HXA079 14B
+
+sh train_stage1.sh -c configs/qwen3_14b_hybrid_l6.yaml -l 0.0001 -f 0.00001 -m 1024 -b 32 -a 1 -r "/workspace/datasets" -o "/workspace/output/Qwen3-14B/hxa079-stage1p" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 1 -z 1 -P 'hxa079-qwen3-14b-stage1' -N 1
+
+
+python ./train_scripts/save_checkpoint.py /workspace/output/Qwen3-14B/hxa079-stage1p/epoch_0_step_3200 /workspace/output/Qwen3-14B/hxa079-stage1p/pytorch_model.bin
+
+
+sh train2_ds2.sh -c configs/qwen3_14b_hybrid_l6.yaml -l 0.00001 -f 0.000001 -m 4096 -b 4 -a 5 -r "/workspace/datasets" -o "/workspace/output/Qwen3-14B/hxa079-stage2p" -k "/workspace/output/Qwen3-14B/hxa079-stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'hxa079-qwen3-14b-hybrid-stage2' -N 1
+
+python ./train_scripts/save_checkpoint.py /workspace/output/Qwen3-14B/hxa079-stage2p/epoch_0_step_3000 /workspace/output/Qwen3-14B/hxa079-stage2p/pytorch_model.bin
+
+sh train2_ds2.sh -c configs/qwen3_14b_hybrid_l6.yaml -l 0.000005 -f 0.000001 -m 4096 -b 7 -a 4 -r "/workspace/datasets" -o "/workspace/output/Qwen3-14B/hxa079-stage2p1" -k "/workspace/output/Qwen3-14B/hxa079-stage2p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'hxa079-qwen3-14b-hybrid-stage2' -N 1
+
+python ./train_scripts/save_checkpoint.py /workspace/output/Qwen3-14B/hxa079-stage2p1/epoch_0_step_3500 /workspace/output/Qwen3-14B/hxa079-stage2p1/pytorch_model.bin
+
+
+#Reka-Flash-3
+
+sh train_stage1.sh -c configs/reka_flash3_hybrid_l6_stage1.yaml -l 0.0001 -f 0.00001 -m 1024 -b 24 -a 1 -r "/workspace/r3" -o "/workspace/output/reka-flash3/hxa079-stage1p" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 1 -G 1 -z 1 -P 'hxa079-reka3-flash-stage1' -N 1
+
+python ./train_scripts/save_checkpoint.py /workspace/output/reka-flash3/hxa079-stage1p/epoch_0_step_4000 /workspace/output/reka-flash3/hxa079-stage1p/pytorch_model.bin
+
+sh train2_ds2.sh -c configs/reka_flash3_hybrid_l6.yaml -l 0.00001 -f 0.000001 -m 4096 -b 6 -a 5 -r "/workspace/r3" -o "/workspace/output/reka-flash3/hxa079-stage2p" -k "/workspace/output/reka-flash3/hxa079-stage1p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'hxa079-reka3-flash-stage2' -N 1
+
+python ./train_scripts/save_checkpoint.py /workspace/output/reka-flash3/hxa079-stage2p/epoch_0_step_6500 /workspace/output/reka-flash3/hxa079-stage2p/pytorch_model.bin
+
+sh train2_ds2.sh -c configs/reka_flash3_hybrid_l6.yaml -l 0.000003 -f 0.000001 -m 4096 -b 6 -a 5 -r "/workspace/r3" -o "/workspace/output/reka-flash3/hxa079-stage2p2" -k "/workspace/output/reka-flash3/hxa079-stage2p/pytorch_model.bin/pytorch_model.bin" -g 1 -F 0 -d 1 -t 1000_000_000 -T 0.0002 -R v7 -s 2 -G 1 -z 1 -P 'hxa079-reka3-flash-stage2-2' -N 1
+
+python ./train_scripts/save_checkpoint.py /workspace/output/reka-flash3/hxa079-stage2p2/epoch_0_step_1000 /workspace/output/reka-flash3/hxa079-stage2p2/pytorch_model.bin
+
+python ./train_scripts/ConvertToRWKVInfer_hybrid.py

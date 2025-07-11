@@ -6,7 +6,7 @@ import logging
 #from cupy.cuda import nccl
 import json
 import torch
-from torch.optim import Adam
+from torch.optim import AdamW
 from deepspeed.ops.adam import DeepSpeedCPUAdam, FusedAdam
 from deepspeed.ops.lion import DeepSpeedCPULion, FusedLion
 from profiler import time_function
@@ -333,9 +333,11 @@ def configure_optimizer_stage2(model, args):
             if args.bnb_optimizer_mode:
                 optimizer =  AdamW8bit(optim_groups,  betas=args.betas, eps=args.adam_eps)
             else:
-                optimizer = FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
+                optimizer = AdamW(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps)
+                #optimizer = FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
     else:
-        optimizer = Adam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps)
+        optimizer = AdamW(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps)
+        #optimizer = Adam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps)
 
     return optimizer
 
@@ -399,7 +401,8 @@ def configure_optimizer(model, args):
             elif args.bnb_optimizer_mode == 2:
                 optimizer =  Lion8bit(optim_groups,  betas=args.betas)
             else:
-                optimizer = FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
+                #optimizer = FusedAdam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps, bias_correction=True, adam_w_mode=True, amsgrad=False)
+                optimizer = AdamW(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps)
     else:
         optimizer = Adam(optim_groups, lr=args.lr_init, betas=args.betas, eps=args.adam_eps)
 

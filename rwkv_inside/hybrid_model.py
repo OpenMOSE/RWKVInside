@@ -339,10 +339,10 @@ class AttentionWrapper(nn.Module):
                                     teacher_outputs = self.teacher_attn(*args, **kwargs)
                                     student_hidden_states = teacher_outputs[0]
                         else:
-                            #student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, position_embeddings)
+                            # student_hidden_states = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, position_embeddings,current_embeddings)
                             student_hidden_states = torch_checkpoint(self.student_attn, hidden_states, position_embeddings,current_embeddings, use_reentrant=False)
                     else:
-                        #student_hidden_states,v_first = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, v_first, self.attention_mask, position_embeddings,position_ids)
+                        # student_hidden_states,v_first,k_first = deepspeed.checkpointing.checkpoint(self.student_attn, hidden_states, v_first,k_first, self.attention_mask, position_embeddings,position_ids, current_embeddings)
                         student_hidden_states,v_first,k_first = torch_checkpoint(self.student_attn, hidden_states, v_first,k_first, self.attention_mask, position_embeddings,position_ids, current_embeddings,use_reentrant=False)
                         self.v_first_state.shared_state.data.copy_(v_first)
                         self.k_first_state.shared_state.data.copy_(k_first)
@@ -400,8 +400,8 @@ class AttentionWrapper(nn.Module):
         if self.student_attn is None:
             special_attn_loss = 0.0
         else:
-            special_attn_loss = self.comprehensive_attention_mimicking_loss(teacher_hidden_states,student_hidden_states,self.layer_idx,self.args.n_layer,self.args)
-            #special_attn_loss = torch.nn.functional.mse_loss(student_hidden_states, teacher_hidden_states)
+            #special_attn_loss = self.comprehensive_attention_mimicking_loss(teacher_hidden_states,student_hidden_states,self.layer_idx,self.args.n_layer,self.args)
+            special_attn_loss = torch.nn.functional.mse_loss(student_hidden_states, teacher_hidden_states)
             #special_attn_loss = torch.linalg.vector_norm(teacher_hidden_states - student_hidden_states, dim=-1).mean() * (teacher_hidden_states[0].size(-1) ** -0.5)
         # if self.layer_idx == 0:
         #     print(f'Teacher = {teacher_hidden_states}')

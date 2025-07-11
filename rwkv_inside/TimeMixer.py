@@ -164,6 +164,9 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
 
         self.RKNormMode = True
 
+        if args.disable_qk_norm:
+            self.RKNormMode = False
+
         print(f'layer = {layer_id} head_size {self.head_size} n_head {self.n_head}')
 
         assert args.dim_att % self.n_head == 0
@@ -275,7 +278,7 @@ class RWKV_Tmix_x070_Mose_cxa078(torch.nn.Module):
            
 
     
-    @torch.compile
+    #@torch.compile
     def forward(self, x, v_first,attention_mask,position_embeddings,position_ids,x_emb): 
         B, T, C = x.size()
         #removed tokenshift
@@ -367,6 +370,9 @@ class RWKV_Tmix_x070_Mose_cxa079(torch.nn.Module):
         self.rope_theta = args.config.rope_theta
 
         self.RKNormMode = True
+
+        if args.disable_qk_norm:
+            self.RKNormMode = False
 
         print(f'layer = {layer_id} head_size {self.head_size} n_head {self.n_head}')
 
@@ -486,7 +492,7 @@ class RWKV_Tmix_x070_Mose_cxa079(torch.nn.Module):
            
 
     
-    @torch.compile
+    #@torch.compile
     def forward(self, x, v_first,k_first,attention_mask,position_embeddings,position_ids,x_emb): 
         B, T, C = x.size()
         #removed tokenshift
@@ -497,8 +503,8 @@ class RWKV_Tmix_x070_Mose_cxa079(torch.nn.Module):
             r = self.r_norm(self.receptance(x).view(B,T,self.num_attention_heads,-1))
             k = self.k_norm(self.key(x).view(B,T,self.num_key_value_heads,-1))
         else:
-            r = self.receptance(x)
-            k = self.key(x)
+            r = self.receptance(x).view(B,T,self.num_attention_heads,-1)
+            k = self.key(x).view(B,T,self.num_key_value_heads,-1)
 
         
         w = -F.softplus(-(self.w0 + torch.tanh(x @ self.w1) @ self.w2)) -0.5
@@ -650,6 +656,8 @@ def sdpa_attention_forward(
     if torch.jit.is_tracing() and isinstance(is_causal, torch.Tensor):
         is_causal = is_causal.item()
 
+    #print(is_causal)
+
     attn_output = torch.nn.functional.scaled_dot_product_attention(
         query,
         key,
@@ -689,6 +697,9 @@ class GQAWithRopeAttention(nn.Module):
 
         self.QKNormMode = True
 
+        if args.disable_qk_norm:
+            self.QKNormMode = False
+
         print(f'layer = {layer_id} head_size {self.head_size} n_head {self.n_head}')
 
 
@@ -700,23 +711,13 @@ class GQAWithRopeAttention(nn.Module):
         C = H*N#args.n_embd
         Hidden_dim = args.n_embd
 
-        # assert embed_dim % num_heads == 0
-        # assert num_heads % kv_heads == 0
 
-        # self.q_proj = nn.Linear(embed_dim, embed_dim)
-        # self.k_proj = nn.Linear(embed_dim, kv_heads * self.head_dim)
-        # self.v_proj = nn.Linear(embed_dim, kv_heads * self.head_dim)
-        # self.out_proj = nn.Linear(embed_dim, embed_dim)
 
         if args.freeze_hybrid_attention:
                 peftmode = 'full'
         else:
             peftmode = args.peftmode
 
-        # self.q_proj = nn.Linear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias)
-        # self.k_proj = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-        # self.v_proj = nn.Linear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias)
-        # self.o_proj = nn.Linear(self.num_attention_heads * self.head_size, Hidden_dim, bias=self.args.is_attention_output_bias)
         self.q_proj = LoraLinear(Hidden_dim, self.num_attention_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
         self.k_proj = LoraLinear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
         self.v_proj = LoraLinear(Hidden_dim, self.num_key_value_heads * self.head_size, bias=self.args.is_attention_bias,peftmode=peftmode)
@@ -726,54 +727,7 @@ class GQAWithRopeAttention(nn.Module):
             self.q_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
             self.k_norm = Qwen3RMSNorm(self.head_size, eps=self.rms_norm_eps) 
 
-    # def forward_(self, x, position_embeddings,past_kv: dict = None, use_cache=False):
-    #     # x: [B, T, C]
-    #     B, T, C = x.size()
-    #     H, H_kv, D = self.num_attention_heads, self.num_key_value_heads, self.head_size
-    #     G = H // H_kv  # group数
-
-    #     if self.QKNormMode:
-    #         q = self.q_norm(self.q_proj(x).view(B, T, H, D)).transpose(1, 2)  # [B, H, T, D]
-    #         k = self.k_norm(self.k_proj(x).view(B, T, H_kv, D)).transpose(1, 2)  # [B, H_kv, T, D]
-    #     else:
-    #         q = self.q_proj(x).view(B, T, H, D).transpose(1, 2)  # [B, H, T, D]
-    #         k = self.k_proj(x).view(B, T, H_kv, D).transpose(1, 2)  # [B, H_kv, T, D]
-    #     v = self.v_proj(x).view(B, T, H_kv, D).transpose(1, 2)  # [B, H_kv, T, D]
-
-    #     # RoPEの適用
-    #     #cos, sin = build_rope_cache(T, D, x.device, x.dtype, self.rope_theta)
-        
-    #     #cos, sin, inv_freq_own = compute_qwen3_rope_cache(T, self.head_size, k.device, torch.float32, self.rope_theta)
-    #     cos ,sin = position_embeddings
-
-    #     #cos=cos.to(dtype=torch.bfloat16)
-    #     #sin=sin.to(dtype=torch.bfloat16)
-
-    #     # q = apply_rope(q, cos, sin)
-    #     # k = apply_rope(k, cos, sin)
-    #     q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=1)
-
-    #     # 過去のKVを追加
-    #     if past_kv is not None:
-    #         k = torch.cat([past_kv["k"], k], dim=2)  # 時間軸に結合
-    #         v = torch.cat([past_kv["v"], v], dim=2)
-
-    #     # KVキャッシュ保存
-    #     if use_cache:
-    #         new_kv = {"k": k.detach(), "v": v.detach()}
-    #     else:
-    #         new_kv = None
-
-    #     # GQA: [B, H, T, D] vs [B, H_kv, S, D] → repeat KV
-    #     k = k.unsqueeze(1).repeat(1, G, 1, 1, 1).view(B, H, -1, D)
-    #     v = v.unsqueeze(1).repeat(1, G, 1, 1, 1).view(B, H, -1, D)
-
-    #     # SDPA (B, H, T, D), (B, H, S, D)
-    #     out = F.scaled_dot_product_attention(q, k, v, is_causal=True)  # causal処理
-    #     out = out.transpose(1, 2).contiguous().view(B, T, C)
-    #     return self.o_proj(out)#, new_kv
-    
-    @torch.compile
+    #@torch.compile
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -787,16 +741,22 @@ class GQAWithRopeAttention(nn.Module):
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_size)
         B, T, C = hidden_states.size()
+        if self.QKNormMode:
+            query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        else:
+            query_states = (self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+            key_states = (self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
 
-        query_states = self.q_norm(self.q_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
-        key_states = self.k_norm(self.k_proj(hidden_states).view(hidden_shape)).transpose(1, 2)
+        
         value_states = self.v_proj(hidden_states).view(hidden_shape).transpose(1, 2)
 
         #cos, sin = position_embeddings
-        # cos, sin, inv_freq_own = compute_qwen3_rope_cache(T, self.head_size, key_states.device, torch.float32, self.rope_theta)
-        # cos=cos.to(dtype=torch.bfloat16)
-        # sin=sin.to(dtype=torch.bfloat16)
-        # query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
+        cos, sin, inv_freq_own = compute_qwen3_rope_cache(T, self.head_size, key_states.device, torch.float32, self.rope_theta)
+        cos=cos.to(dtype=torch.bfloat16)
+        sin=sin.to(dtype=torch.bfloat16)
+        if self.args.stage==1:
+            query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin)
 
         # if past_key_value is not None:
         #     # sin and cos are specific to RoPE models; cache_position needed for the static cache

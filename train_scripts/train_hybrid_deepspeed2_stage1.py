@@ -245,7 +245,7 @@ def create_arg_parser():
     parser.add_argument('--lr_init', type=float, default=6e-4, help='initial learning rate in the model')
     parser.add_argument('--lr_final', type=float, default=1e-5, help='final learning rate in the model')
     parser.add_argument('--beta1', type=float, default=0.9, help='beta1 parameter in the Adam optimizer')
-    parser.add_argument('--beta2', type=float, default=0.95, help='beta2 parameter in the Adam optimizer')
+    parser.add_argument('--beta2', type=float, default=0.98, help='beta2 parameter in the Adam optimizer')
     parser.add_argument('--layerwise_lr', type=float, nargs='+', default=1, help='layerwise learning rate in the model')
     parser.add_argument('--adam_eps', type=float, default=1e-8, help='epsilon parameter in the Adam optimizer')
     parser.add_argument('--warmup_steps', type=int, default=50, help='warmup steps in the model')
@@ -302,7 +302,7 @@ def create_arg_parser():
     parser.add_argument('--peft_scaling', type=float, default=0.5, help='peft block lora scaling')
     parser.add_argument('--peft_dropout', type=float, default=0.01, help='peft block lora dropout')
 
-    parser.add_argument('--bnb_optimizer_mode', type=int, default=0, help='Use Bitsandbytes 8bit optimizer AdamW')
+    parser.add_argument('--bnb_optimizer_mode', type=int, default=1, help='Use Bitsandbytes 8bit optimizer AdamW')
 
 
     
@@ -528,6 +528,21 @@ if __name__ == '__main__':
     # 加载模型和分词器
     transformer_model = AutoModelForCausalLM.from_pretrained(config['Llama']['model_id'],
                                                             torch_dtype=dtype, device_map=DeviceID,low_cpu_mem_usage=True)
+    
+    args.freeze_attention = config['freeze_attention']
+    args.hybrid_attention_layers = config['hybrid_attention_layers']
+    args.freeze_hybrid_attention = config['freeze_hybrid_attention']
+    args.allow_quant_frozen_layers = config['allow_quant_frozen_layers']
+    args.quant_mode = config['quant_mode']
+    args.peftmode = config['peftmode']
+    args.peft_r = config['peft_r']
+    args.peft_scaling = config['peft_scaling']
+    args.peft_dropout = config['peft_dropout']
+    args.mlp_quant_mode = config['mlp_quant_mode']
+    args.bnb_optimizer_mode = config['bnb_optimizer_mode']
+    args.transformer_layers = config['RWKV']['transformer_layers']
+    args.disable_qk_norm = config['disable_qk_norm']
+    
     tokenizer = AutoTokenizer.from_pretrained(config['Llama']['model_id'])
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -567,8 +582,12 @@ if __name__ == '__main__':
     args.is_all_labels_kl = config.get('is_all_labels_kl', False)
     print(f'{transformer_model.config.num_hidden_layers}')
 
-    if args.bnb_optimizer_mode:
-        args.deepspeed_offload = False
+    # if args.bnb_optimizer_mode:
+    #     args.deepspeed_stage = 1
+    #     args.deepspeed_offload = False
+    #     args.deepspeed_offload = False
+    args.deepspeed_offload = False
+    #args.deepspeed_stage = 1
     
     # 初始化混合模型
     #if args.stage == 1:
@@ -604,7 +623,10 @@ if __name__ == '__main__':
     # model = model.to(dtype=torch.bfloat16, device=DeviceID)
     # pname = 'model.model.layers.15.self_attn.student_attn.receptance.weight'
 
-    model = quantize_and_replace_with_wrapper(model, patterns=["mlp"], threshold=0)
+    #model = quantize_and_replace_with_wrapper(model, patterns=["mlp"], threshold=0)
+    
+    model = quantize_mlp_layers_properly(model,args,device=DeviceID)
+
 
     #model = quantize_mlp_layers_properly(model,device=DeviceID)
 
@@ -640,16 +662,17 @@ if __name__ == '__main__':
     weight_mul_o = 1.0 
     with torch.no_grad():
         for i in range(args.n_layer):
-            if i < args.n_layer - args.hybrid_attention_layers:
+            if i in args.transformer_layers:
+                weight_mul_r = 1.0
+                weight_mul_k = 1.0
+                weight_mul_v = 1.0
+                weight_mul_o = 1.0
+                
+            else:
                 weight_mul_r = 1.0
                 weight_mul_k = 1.0
                 weight_mul_v = 0.3
                 weight_mul_o = 0.5 
-            else:
-                weight_mul_r = 1.0
-                weight_mul_k = 1.0
-                weight_mul_v = 1.0
-                weight_mul_o = 1.0 
             print(f'layer = {i} transfer to student')
             for name,param in model.named_parameters():
                 #print(name)
@@ -922,11 +945,11 @@ if __name__ == '__main__':
         Attention = 0
         for i in range(args.n_layer):
             t = f'layers.{i}.'
-            if t in name and i < args.n_layer - args.hybrid_attention_layers:
-                Attention = 0
+            if t in name and i in args.transformer_layers:
+                Attention = 1
                 break
             elif t in name:
-                Attention = 1
+                Attention = 0
                 break
         print(f'{name} {param.dtype}')
         if Attention == 0 and args.freeze_attention and ('self_attn.student_attn' in name and ('receptance' in name or 'key' in name or 'value' in name)):
@@ -942,6 +965,7 @@ if __name__ == '__main__':
         else:
             param.requires_grad = False
             print(f'{name} Frozen')
+
     lora_base_modules = set()
     if args.peftmode != 'full':
         print('freeze original weight if peft linears')
@@ -1003,11 +1027,11 @@ if __name__ == '__main__':
             Attention = 0
             for i in range(args.n_layer):
                 t = f'layers.{i}.'
-                if t in name and i < args.n_layer - args.hybrid_attention_layers:
-                    Attention = 0
+                if t in name and i in args.transformer_layers:
+                    Attention = 1
                     break
                 elif t in name:
-                    Attention = 1
+                    Attention = 0
                     break
             #print(f'{name} {param.dtype}')
             if Attention == 0 and args.freeze_attention and ('self_attn.student_attn' in name and ('receptance' in name or 'key' in name or 'value' in name)):
@@ -1134,34 +1158,18 @@ if __name__ == '__main__':
                 "fp32_reduce_scatter": True,
                 "zero_optimization": {
                     "stage": args.deepspeed_stage,
-                    # "stage3_max_live_parameters": 1e8,
-                    # "stage3_max_reuse_distance": 1e8,
-                    # "stage3_param_persistence_threshold": 1e4,
-                    # "memory_efficient_linear": True,
-                    # "stage3_gather_16bit_weights_on_model_save": False,
-                    # #"zero_quantized_weights": True,
-                    # "zero_hpz_partition_size": args.world_size,
-                    # "zero_quantized_gradients": True,
+            
                     "offload_optimizer": {
                         "device": "cpu",
                         "pin_memory": False,
                         "buffer_count": 4,
                         'ratio':1.0
                     },
-                    # "offload_param": {
-                    #     "device": "cpu",
-                    #     "pin_memory": False,
-                    #     "buffer_count": 1,
-                    #     "buffer_size": 1e6,
-                    #     "max_in_cpu" : 1e5
-                    # },
                     
                     "allgather_partitions": True,
                     "sub_group_size": 1e7,
                     "overlap_comm": True,
                     "reduce_scatter": True,
-                    #"reduce_bucket_size": 5e6,
-                    #"contiguous_gradients": True
                 },
                 "gradient_clipping": args.gradient_clip_val,
                 "gradient_checkpointing": args.grad_cp == 1,
@@ -1170,18 +1178,13 @@ if __name__ == '__main__':
                 "gradient_accumulation_steps": args.accumulate_grad_batches if args.accumulate_grad_batches > 1 else None,
                 "wall_clock_breakdown": False,
                 "dump_state": True,
-                # "activation_checkpointing": {
-                #     "partition_activations": True,
-                #     "cpu_checkpointing": True,
-                #     "contiguous_memory_optimization": True,
-                #     "number_checkpoints": 1,
-                #     "synchronize_checkpoint_boundary": True,
-                #     "profile": False
-                # }
             }
         if not args.deepspeed_offload:
             ds_config['zero_optimization']['offload_optimizer'] = None
             ds_config['zero_optimization']['offload_param'] = None
+            ds_config['zero_force_ds_cpu_optimizer'] = False
+            ds_config['zero_force_ds_cpu_initialization'] = False
+            
         # 手动配置优化器
         print(f'configuring optimizer with args {args}')
         optimizer = configure_optimizer(model, args)
@@ -1250,27 +1253,27 @@ if __name__ == '__main__':
             if args.local_rank == 0:
                 print(f'initializing teacher model')
                 print(f'current gpu memory BEFORE initializing teacher attn list: {torch.cuda.memory_summary(device=None, abbreviated=False)}')
-            ds_config = {
-                "zero_force_ds_cpu_optimizer": False,
-                "distributed_backend": "rccl",
-                "train_batch_size": args.train_batch_size,
-                "bf16": {
-                    "enabled": True
-                },
+            # ds_config = {
+            #     "zero_force_ds_cpu_optimizer": False,
+            #     "distributed_backend": "rccl",
+            #     "train_batch_size": args.train_batch_size,
+            #     "bf16": {
+            #         "enabled": True
+            #     },
          
-                "zero_optimization": {
-                    "stage": args.deepspeed_stage,
-                    # "stage3_max_live_parameters": 1e9,
+            #     "zero_optimization": {
+            #         "stage": args.deepspeed_stage,
+            #         # "stage3_max_live_parameters": 1e9,
                   
-                    "allgather_partitions": True,
-                    "reduce_scatter": True,
-                    "reduce_bucket_size": 5e6,
-                    "overlap_comm": False,
-                    "contiguous_gradients": False
-                },
-                "zero_force_ds_cpu_initialization": True,
-                "dump_state": True
-            }
+            #         "allgather_partitions": True,
+            #         "reduce_scatter": True,
+            #         "reduce_bucket_size": 5e6,
+            #         "overlap_comm": False,
+            #         "contiguous_gradients": False
+            #     },
+            #     "zero_force_ds_cpu_initialization": True,
+            #     "dump_state": True
+            # }
             teacher_attn_module_list.requires_grad_(False)
 
             teacher_engine = teacher_attn_module_list

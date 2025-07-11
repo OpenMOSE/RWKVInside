@@ -450,6 +450,7 @@ if __name__ == '__main__':
     args.mlp_quant_mode = config['mlp_quant_mode']
     args.bnb_optimizer_mode = config['bnb_optimizer_mode']
     args.transformer_layers = config['RWKV']['transformer_layers']
+    args.disable_qk_norm = config['disable_qk_norm']
     
     tokenizer = AutoTokenizer.from_pretrained(config['Llama']['model_id'])
     if tokenizer.pad_token is None:
@@ -493,6 +494,8 @@ if __name__ == '__main__':
     if args.bnb_optimizer_mode > 0:
         args.deepspeed_stage = 1
         args.deepspeed_offload = False
+
+    args.deepspeed_offload = False
 
     os.environ["RWKV_HEAD"] = str(int(args.n_embd // args.head_size_a))
     os.environ["RWKV_HEAD_SIZE_A"] = str(int(args.head_size_a))
@@ -1135,6 +1138,8 @@ if __name__ == '__main__':
         if not args.deepspeed_offload:
             ds_config['zero_optimization']['offload_optimizer'] = None
             ds_config['zero_optimization']['offload_param'] = None
+            ds_config['zero_force_ds_cpu_optimizer'] = False
+            ds_config['zero_force_ds_cpu_initialization'] = False
         # 手动配置优化器
         print(f'configuring optimizer with args {args}')
 
