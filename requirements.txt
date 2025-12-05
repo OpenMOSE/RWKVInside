@@ -1,0 +1,10 @@
+deepspeed
+wandb
+prompt_toolkit
+pandas
+triton
+accelerate
+transformers==4.51.0
+einops
+h5py
+datasets
